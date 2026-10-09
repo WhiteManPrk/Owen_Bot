@@ -15,6 +15,17 @@ def _required(name: str) -> str:
     return value
 
 
+TG_PROXY_SCHEMES = ("socks5", "socks4", "http")              # aiohttp-socks
+OWEN_PROXY_SCHEMES = ("socks5", "socks5h", "http", "https")  # httpx + socksio
+
+
+def check_scheme(name: str, url: str | None, allowed: tuple[str, ...]) -> str | None:
+    if url and url.partition("://")[0].lower() not in allowed:
+        raise SystemExit(f"{name}: неподдерживаемый тип прокси «{url.partition('://')[0]}». "
+                         f"Допустимо: {', '.join(s + '://' for s in allowed)}")
+    return url
+
+
 def proxy_url(url: str | None, login: str | None, password: str | None) -> str | None:
     """Адрес прокси с логином и паролем: ('socks5://host:1080', 'user', 'p@ss') -> 'socks5://user:p%40ss@host:1080'.
 
@@ -51,9 +62,11 @@ class Config:
         )
         return cls(
             bot_token=_required("BOT_TOKEN"),
-            tg_proxy=proxy_url(_env("TG_PROXY"), _env("TG_PROXY_LOGIN"), _env("TG_PROXY_PASSWORD")),
+            tg_proxy=check_scheme("TG_PROXY", proxy_url(
+                _env("TG_PROXY"), _env("TG_PROXY_LOGIN"), _env("TG_PROXY_PASSWORD")), TG_PROXY_SCHEMES),
             owen_api_url=_env("OWEN_API_URL", "https://api.owencloud.ru/v1"),
-            owen_proxy=proxy_url(_env("OWEN_PROXY"), _env("OWEN_PROXY_LOGIN"), _env("OWEN_PROXY_PASSWORD")),
+            owen_proxy=check_scheme("OWEN_PROXY", proxy_url(
+                _env("OWEN_PROXY"), _env("OWEN_PROXY_LOGIN"), _env("OWEN_PROXY_PASSWORD")), OWEN_PROXY_SCHEMES),
             poll_interval=int(_env("POLL_INTERVAL", "60")),
             database_url=database_url,
             encryption_key=_required("ENCRYPTION_KEY"),

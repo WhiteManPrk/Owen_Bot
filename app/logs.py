@@ -8,7 +8,11 @@ FORMAT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
 
 def setup_logging(level: str, log_dir: str | None) -> None:
     logging.basicConfig(level=level, format=FORMAT)
-    logging.getLogger("httpx").setLevel(logging.WARNING)
+    # DEBUG — только для кода бота: сторонние библиотеки шумят и могут писать заголовки с ключами
+    for name in ("aiogram", "aiohttp", "asyncio", "asyncpg"):
+        logging.getLogger(name).setLevel(max(logging.INFO, logging.getLogger().level))
+    for name in ("httpx", "httpcore"):
+        logging.getLogger(name).setLevel(logging.WARNING)
     if not log_dir:
         return
     try:

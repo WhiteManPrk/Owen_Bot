@@ -5,7 +5,6 @@ import os
 
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
-from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.enums import ParseMode
 from aiogram.exceptions import TelegramNetworkError
 from aiogram.fsm.storage.memory import MemoryStorage
@@ -13,6 +12,7 @@ from aiogram.types import BotCommand, MenuButtonCommands
 
 from .bot import build_router
 from .bot.access import AccessMiddleware, code_hash
+from .bot.logging_mw import UpdateLogMiddleware
 from .config import Config
 from .crypto import TokenCrypto
 from .db import Database
@@ -21,6 +21,7 @@ from .notifier import Notifier
 from .owen import OwenClient
 from .poller import Poller
 from .services import Services
+from .telegram import create_session
 
 COMMANDS = [
     BotCommand(command="devices", description="Приборы"),
@@ -33,15 +34,11 @@ COMMANDS = [
 
 async def setup_menu(bot: Bot) -> None:
     """Меню команд. Сбой сети (например, прокси) не должен ронять запуск — меню уже могло быть задано раньше."""
-    for attempt in range(1, 4):
-        try:
-            await bot.set_my_commands(COMMANDS)
-            await bot.set_chat_menu_button(menu_button=MenuButtonCommands())
-            return
-        except TelegramNetworkError as e:
-            logging.warning("Меню команд: %s (попытка %s из 3)", e, attempt)
-            await asyncio.sleep(3 * attempt)
-    logging.warning("Меню команд не обновлено, продолжаю без этого")
+    try:
+        await bot.set_my_commands(COMMANDS)
+        await bot.set_chat_menu_button(menu_button=MenuButtonCommands())
+    except TelegramNetworkError as e:
+        logging.warning("Меню команд не обновлено (%s), продолжаю без этого", e)
 
 
 async def main() -> None:
@@ -54,10 +51,12 @@ async def main() -> None:
     owen = OwenClient(cfg.owen_api_url, proxy=cfg.owen_proxy)
     svc = Services(db, owen, crypto)
 
-    session = AiohttpSession(proxy=cfg.tg_proxy) if cfg.tg_proxy else AiohttpSession()
-    bot = Bot(cfg.bot_token, session=session, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+    bot = Bot(cfg.bot_token, session=create_session(cfg.tg_proxy), default=DefaultBotProperties(parse_mode=ParseMode.HTML))
     dp = Dispatcher(storage=MemoryStorage())
     dp["svc"] = svc
+    updates_log = UpdateLogMiddleware()
+    dp.message.outer_middleware(updates_log)
+    dp.callback_query.outer_middleware(updates_log)
     access = AccessMiddleware(cfg.access_code)
     dp.message.outer_middleware(access)
     dp.callback_query.outer_middleware(access)

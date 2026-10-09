@@ -167,10 +167,10 @@ async def confirm_write(cb: CallbackQuery, state: FSMContext, svc: Services, bot
     if not token:
         await cb.answer(NO_ACCOUNT, show_alert=True)
         return
-    title = f"«{escape(data['name'])}» = <b>{escape(data['label'])}</b>"
-    retry = retry_keyboard(data["conn_id"], data["device_id"], data["param_id"], data["value"])
+    title = write_title(data["name"], data["label"])
+    retry = result_keyboard("failed", data["conn_id"], data["device_id"], data["param_id"], data["value"])
     try:
-        group_id = await svc.owen.write(token, data["param_id"], data["value"])
+        group_id, write_ids = await svc.owen.write(token, data["param_id"], data["value"])
     except OwenWriteError as e:
         reason = ("у компании включено SMS-подтверждение команд — запись через бота не поддерживается"
                   if e.code in SMS_CODES else str(e))
@@ -190,19 +190,70 @@ async def confirm_write(cb: CallbackQuery, state: FSMContext, svc: Services, bot
              cb.message.chat.id, data["param_id"], data["value"], group_id)
     await show(cb, f"⏳ {title}\nКоманда отправлена, ждём выполнения…")
     await cb.answer()
-    asyncio.create_task(track_write(bot, svc, token, group_id, cb.message.chat.id, cb.message.message_id,
-                                    title, retry))
+    asyncio.create_task(track_write(
+        bot, svc, token, group_id, write_ids, cb.message.chat.id, cb.message.message_id, title,
+        (data["conn_id"], data["device_id"], data["param_id"], data["value"])))
 
 
-def retry_keyboard(conn_id: int, device_id: int, param_id: int, value: str):
+def write_title(name: str, label: str) -> str:
+    return f"«{escape(name)}» = <b>{escape(label)}</b>"
+
+
+def status_outcome(statuses: list[dict] | None) -> tuple[str, str]:
+    """('ok' | 'failed' | 'pending' | 'unknown', текст) по ответу write-status."""
+    if not statuses:
+        return "unknown", "Статус команды не получен — проверьте позже."
+    if any(s.get("in_progress") for s in statuses):
+        return "pending", f"Команда ещё выполняется: {statuses[0].get('status', '')}"
+    text = ", ".join(s.get("status", "") for s in statuses)
+    return ("ok" if all(s.get("status_code") == 3 for s in statuses) else "failed"), text
+
+
+OUTCOME_ICONS = {"ok": "✅", "failed": "❌", "pending": "⏳", "unknown": "❔"}
+
+
+def result_keyboard(outcome: str, conn_id: int, device_id: int, param_id: int, value: str,
+                    group_id: int | None = None):
+    """«Повторить» — только при явной неудаче; при неизвестном статусе — «Проверить статус»,
+    чтобы не отправить команду на оборудование дважды."""
     kb = InlineKeyboardBuilder()
-    data = f"cr:{conn_id}:{device_id}:{param_id}:{value}"
-    if len(data.encode()) <= 64:
-        kb.button(text="🔁 Повторить", callback_data=data)
+    first_row = 0
+    if outcome == "failed":
+        data = f"cr:{conn_id}:{device_id}:{param_id}:{value}"
+        if len(data.encode()) <= 64:
+            kb.button(text="🔁 Повторить", callback_data=data)
+            first_row = 1
+    elif outcome in ("pending", "unknown") and group_id is not None:
+        data = f"cs:{conn_id}:{device_id}:{param_id}:{group_id}:{value}"
+        if len(data.encode()) <= 64:
+            kb.button(text="🔄 Проверить статус", callback_data=data)
+            first_row = 1
     kb.button(text="🎛 Управление", callback_data=f"ctl:{conn_id}:{device_id}")
     kb.button(text="📊 Параметры", callback_data=f"prm:{conn_id}:{device_id}")
-    kb.adjust(1, 2)
+    kb.adjust(*([1] if first_row else []), 2)
     return kb.as_markup()
+
+
+@router.callback_query(F.data.startswith("cs:"))
+async def check_status(cb: CallbackQuery, svc: Services) -> None:
+    """Только запрос статуса уже отправленной команды — ничего не записывает."""
+    _, conn_id, device_id, param_id, group_id, value = cb.data.split(":", 5)
+    conn_id, device_id, param_id, group_id = int(conn_id), int(device_id), int(param_id), int(group_id)
+    loaded = await load_param(cb, svc, conn_id, device_id, param_id)
+    if loaded is None:
+        return
+    _, p = loaded
+    _, token = await connection_token(svc, cb.message.chat.id, conn_id)
+    try:
+        statuses = await svc.owen.write_status(token, group_id)
+    except OwenError as e:
+        await cb.answer(f"OwenCloud не ответил: {e}", show_alert=True)
+        return
+    outcome, text = status_outcome(statuses)
+    label = next((lbl for v, lbl in value_options(p) if v == value), value)
+    await show(cb, f"{OUTCOME_ICONS[outcome]} {write_title(p['name'], label)}\n{escape(text)}",
+               result_keyboard(outcome, conn_id, device_id, param_id, value, group_id))
+    await cb.answer()
 
 
 @router.callback_query(F.data.startswith("cr:"))
@@ -222,8 +273,8 @@ async def retry_write(cb: CallbackQuery, state: FSMContext, svc: Services) -> No
     await cb.answer()
 
 
-async def track_write(bot: Bot, svc: Services, token: str, group_id: int, chat_id: int, message_id: int,
-                      title: str, retry) -> None:
+async def track_write(bot: Bot, svc: Services, token: str, group_id: int, write_ids: list[int],
+                      chat_id: int, message_id: int, title: str, target: tuple[int, int, int, str]) -> None:
     """Следит за статусом команды и обновляет сообщение."""
     statuses: list[dict] = []
     elapsed = 0
@@ -231,20 +282,17 @@ async def track_write(bot: Bot, svc: Services, token: str, group_id: int, chat_i
         await asyncio.sleep(3)
         elapsed += 3
         try:
-            statuses = await svc.owen.write_status(token, group_id)
+            statuses = await svc.owen.write_status(token, group_id, write_ids)
         except OwenError as e:
             log.warning("Статус записи %s: %s", group_id, e)
             continue
         if statuses and not any(s.get("in_progress") for s in statuses):
             break
-    if not statuses:
-        text = f"❔ {title}\nСтатус команды неизвестен — проверьте в OwenCloud."
-    elif any(s.get("in_progress") for s in statuses):
-        text = f"⏳ {title}\nКоманда ещё выполняется: {escape(statuses[0].get('status', ''))}"
-    else:
-        ok = all(s.get("status_code") == 3 for s in statuses)
-        text = f"{'✅' if ok else '❌'} {title}\n{escape(', '.join(s.get('status', '') for s in statuses))}"
+    outcome, text = status_outcome(statuses)
+    log.info("Запись, группа %s: %s (%s)", group_id, outcome, text)
+    markup = result_keyboard(outcome, *target, group_id=group_id)
+    message = f"{OUTCOME_ICONS[outcome]} {title}\n{escape(text)}"
     try:
-        await bot.edit_message_text(text, chat_id=chat_id, message_id=message_id, reply_markup=retry)
+        await bot.edit_message_text(message, chat_id=chat_id, message_id=message_id, reply_markup=markup)
     except TelegramBadRequest:
-        await bot.send_message(chat_id, text, reply_markup=retry)
+        await bot.send_message(chat_id, message, reply_markup=markup)

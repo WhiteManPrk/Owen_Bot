@@ -30,7 +30,8 @@ Owen Bot сам забирает журнал событий через [API Owe
 - 🔑 **Несколько аккаунтов OwenCloud** в одном чате; ключи хранятся **зашифрованными**.
 - 🔒 **Закрытый режим** — доступ к боту только по коду.
 - 👥 Работает в личных и групповых чатах.
-- 🌐 Поддержка SOCKS5/HTTP-прокси для Telegram.
+- 🌐 Прокси SOCKS5/SOCKS4/HTTP для Telegram, в том числе с логином и паролем.
+- 🔁 Повтор запросов при обрывах связи с Telegram и OwenCloud.
 
 ## Как выглядят уведомления
 
@@ -118,11 +119,11 @@ cd /opt/owenbot && sudo docker compose pull && sudo docker compose up -d
 | `ENCRYPTION_KEY` | ✅ | — | Ключ Fernet для шифрования API-ключей OwenCloud |
 | `POSTGRES_PASSWORD` | ✅ | — | Пароль PostgreSQL |
 | `ACCESS_CODE` | | *пусто* | Код доступа. Пусто — бот открыт для всех |
-| `TG_PROXY` | | *пусто* | Прокси для Telegram: `socks5://host:port`, `http://host:port` |
+| `TG_PROXY` | | *пусто* | Прокси для Telegram: `socks5://`, `socks4://`, `http://` + `host:port` |
 | `TG_PROXY_LOGIN` / `TG_PROXY_PASSWORD` | | *пусто* | Логин и пароль прокси, если он с авторизацией |
 | `POLL_INTERVAL` | | `60` | Интервал опроса журнала событий, секунды |
 | `OWEN_API_URL` | | `https://api.owencloud.ru/v1` | Адрес API OwenCloud |
-| `OWEN_PROXY` | | *пусто* | Прокси для запросов к OwenCloud (обычно не нужен) |
+| `OWEN_PROXY` | | *пусто* | Прокси для OwenCloud (обычно не нужен): `socks5://`, `socks5h://`, `http://`, `https://` |
 | `OWEN_PROXY_LOGIN` / `OWEN_PROXY_PASSWORD` | | *пусто* | Логин и пароль прокси OwenCloud |
 | `POSTGRES_DB` / `POSTGRES_USER` | | `owenbot` | Имя БД и пользователя |
 | `LOG_LEVEL` | | `INFO` | Уровень логирования: `DEBUG`, `INFO`, `WARNING`, `ERROR` |

@@ -55,9 +55,12 @@ class Poller:
         by_device = defaultdict(list)
         for sub in await self.db.active_subscriptions(self.access_hash):
             by_device[sub["device_id"]].append(sub)
+        started = time.monotonic()
         for device_id, subs in by_device.items():
             await self.poll_device(device_id, subs)
         await self.db.cleanup_records(int(time.time()) - KEEP_RECORDS)
+        log.debug("Цикл опроса: приборов %s, подписок %s, %.1f с", len(by_device),
+                  sum(len(s) for s in by_device.values()), time.monotonic() - started)
 
     async def poll_device(self, device_id: int, subs: list) -> None:
         """Опрос через первый рабочий ключ среди подписчиков прибора."""
@@ -79,6 +82,10 @@ class Poller:
             except OwenError as e:
                 log.warning("Прибор %s: %s", device_id, e)
                 return
+            for rec, phase in events:
+                log.info("Прибор %s: %s «%s» (запись %s, авария=%s)", device_id,
+                         "начало" if phase == "start" else "окончание", rec.get("message"),
+                         rec.get("id"), rec.get("is_critical"))
             if events:
                 await self.dispatch(token, device_id, subs, events)
             return
@@ -139,6 +146,8 @@ class Poller:
                     await self.db.mark_ended(log_id)
 
         await self.db.set_cursor(device_id, cursor, now)
+        log.debug("Прибор %s: записей в окне %s, открытых проверено %s, событий %s, курсор %s",
+                  device_id, len(seen), len(stale), len(events), cursor)
         events.sort(key=lambda e: int(e[0]["start_dt"] if e[1] == "start" else e[0]["end_dt"]))
         return events
 
@@ -166,4 +175,6 @@ class Poller:
                     continue
                 text = event_message(rec, phase, device, company)
                 markup = read_button(sub["connection_id"], rec["id"]) if rec.get("read_dt") is None else None
-                await self.notifier.send(sub["chat_id"], text, markup)
+                ok = await self.notifier.send(sub["chat_id"], text, markup)
+                log.debug("Уведомление в чат %s: запись %s, %s — %s", sub["chat_id"], rec["id"], phase,
+                          "отправлено" if ok else "НЕ отправлено")
