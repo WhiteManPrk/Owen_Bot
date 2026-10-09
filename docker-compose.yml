@@ -1,0 +1,50 @@
+name: owenbot
+
+# ротация `docker logs`: без неё json-файл контейнера растёт без ограничений
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  bot:
+    build: .
+    image: owenbot:latest
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      BOT_TOKEN: ${BOT_TOKEN:?BOT_TOKEN не задан}
+      TG_PROXY: ${TG_PROXY:-}
+      OWEN_API_URL: ${OWEN_API_URL:-https://api.owencloud.ru/v1}
+      OWEN_PROXY: ${OWEN_PROXY:-}
+      POLL_INTERVAL: ${POLL_INTERVAL:-60}
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:?ENCRYPTION_KEY не задан}
+      ACCESS_CODE: ${ACCESS_CODE:-}
+      POSTGRES_HOST: db
+      POSTGRES_DB: ${POSTGRES_DB:-owenbot}
+      POSTGRES_USER: ${POSTGRES_USER:-owenbot}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD не задан}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      LOG_DIR: /logs
+    # volumes:
+    #   - ./logs:/logs
+    logging: *logging
+
+  db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-owenbot}
+      POSTGRES_USER: ${POSTGRES_USER:-owenbot}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD не задан}
+    volumes:
+      - ./pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    logging: *logging

@@ -1,0 +1,18 @@
+# секреты и данные
+.env
+pgdata/
+data/
+logs/
+
+# python
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+
+# IDE
+.vscode/
+.idea/
+
+# рабочий план — только локально
+PLAN.md
