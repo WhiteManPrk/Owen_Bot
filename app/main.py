@@ -1,13 +1,15 @@
 import asyncio
 import contextlib
 import logging
+import os
 
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.enums import ParseMode
+from aiogram.exceptions import TelegramNetworkError
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.types import BotCommand
+from aiogram.types import BotCommand, MenuButtonCommands
 
 from .bot import build_router
 from .bot.access import AccessMiddleware, code_hash
@@ -29,6 +31,19 @@ COMMANDS = [
 ]
 
 
+async def setup_menu(bot: Bot) -> None:
+    """Меню команд. Сбой сети (например, прокси) не должен ронять запуск — меню уже могло быть задано раньше."""
+    for attempt in range(1, 4):
+        try:
+            await bot.set_my_commands(COMMANDS)
+            await bot.set_chat_menu_button(menu_button=MenuButtonCommands())
+            return
+        except TelegramNetworkError as e:
+            logging.warning("Меню команд: %s (попытка %s из 3)", e, attempt)
+            await asyncio.sleep(3 * attempt)
+    logging.warning("Меню команд не обновлено, продолжаю без этого")
+
+
 async def main() -> None:
     cfg = Config.from_env()
     setup_logging(cfg.log_level, cfg.log_dir)
@@ -47,12 +62,13 @@ async def main() -> None:
     dp.message.outer_middleware(access)
     dp.callback_query.outer_middleware(access)
     dp.include_router(build_router())
+    logging.info("Owen Bot %s", os.environ.get("APP_VERSION", "dev"))
     logging.info("Доступ к боту: %s", "по коду (ACCESS_CODE)" if cfg.access_code else "открыт для всех")
 
     poller = Poller(svc, Notifier(bot, db), cfg.poll_interval, access_hash=code_hash(cfg.access_code))
     poll_task = asyncio.create_task(poller.run())
     try:
-        await bot.set_my_commands(COMMANDS)
+        await setup_menu(bot)
         await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
     finally:
         poll_task.cancel()

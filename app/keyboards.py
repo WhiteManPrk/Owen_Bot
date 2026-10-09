@@ -1,16 +1,9 @@
 """Клавиатуры, общие для бота и поллера."""
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardRemove
 
-BTN_DEVICES = "📟 Приборы"
-BTN_READ_ALL = "✔ Прочитать все"
-BTN_ACCOUNTS = "🔑 Аккаунты"
-
-MAIN_MENU = ReplyKeyboardMarkup(
-    keyboard=[[KeyboardButton(text=BTN_DEVICES), KeyboardButton(text=BTN_READ_ALL)],
-              [KeyboardButton(text=BTN_ACCOUNTS)]],
-    resize_keyboard=True,
-    is_persistent=True,
-)
+# Постоянной клавиатуры внизу нет (мешает жесту «назад» на Android) — команды в меню бота.
+# NO_KEYBOARD убирает клавиатуру, оставшуюся от прежних версий.
+NO_KEYBOARD = ReplyKeyboardRemove()
 
 
 def read_button(conn_id: int, log_id: int) -> InlineKeyboardMarkup:

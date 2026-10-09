@@ -71,33 +71,42 @@ Owen Bot сам забирает журнал событий через [API Owe
 
 ### 2. Установка
 
+Готовый образ лежит на Docker Hub — [`whitemanprk/owen_bot`](https://hub.docker.com/r/whitemanprk/owen_bot),
+на сервере нужны только `docker-compose.yml` и `.env`:
+
 ```bash
-sudo git clone https://github.com/WhiteManPrk/Owen_Bot.git /opt/owenbot
-cd /opt/owenbot
-sudo cp .env.example .env
+sudo mkdir -p /opt/owenbot && cd /opt/owenbot
+sudo curl -fsSLO https://raw.githubusercontent.com/WhiteManPrk/Owen_Bot/main/docker-compose.yml
+sudo curl -fsSL -o .env https://raw.githubusercontent.com/WhiteManPrk/Owen_Bot/main/.env.example
 sudo chmod 600 .env
 ```
 
 Сгенерируйте ключ шифрования и пароль БД:
 
 ```bash
-docker run --rm python:3.12-slim sh -c \
-  "pip -q install cryptography && python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())'"
+sudo docker run --rm whitemanprk/owen_bot python -c \
+  "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
 openssl rand -hex 24
 ```
 
 Заполните `.env` (см. [настройки](#настройки)) и запустите:
 
 ```bash
-sudo docker compose up -d --build
+sudo docker compose up -d
 sudo docker compose logs -f bot
+```
+
+Обновление до новой версии образа:
+
+```bash
+cd /opt/owenbot && sudo docker compose pull && sudo docker compose up -d
 ```
 
 ### 3. Начало работы
 
 1. Откройте бота в Telegram и нажмите **Start** (если задан `ACCESS_CODE` — отправьте код).
 2. Отправьте API-ключ OwenCloud — бот проверит его и сразу удалит сообщение с ключом из чата.
-3. **📟 Приборы** → выберите прибор → **🔔 Включить уведомления** → при желании **⚙️ Выбор событий**.
+3. **Меню → /devices** → выберите прибор → **🔔 Включить уведомления** → при желании **⚙️ Выбор событий**.
 
 ## Настройки
 
@@ -110,9 +119,11 @@ sudo docker compose logs -f bot
 | `POSTGRES_PASSWORD` | ✅ | — | Пароль PostgreSQL |
 | `ACCESS_CODE` | | *пусто* | Код доступа. Пусто — бот открыт для всех |
 | `TG_PROXY` | | *пусто* | Прокси для Telegram: `socks5://host:port`, `http://host:port` |
+| `TG_PROXY_LOGIN` / `TG_PROXY_PASSWORD` | | *пусто* | Логин и пароль прокси, если он с авторизацией |
 | `POLL_INTERVAL` | | `60` | Интервал опроса журнала событий, секунды |
 | `OWEN_API_URL` | | `https://api.owencloud.ru/v1` | Адрес API OwenCloud |
-| `OWEN_PROXY` | | *пусто* | Прокси для запросов к OwenCloud |
+| `OWEN_PROXY` | | *пусто* | Прокси для запросов к OwenCloud (обычно не нужен) |
+| `OWEN_PROXY_LOGIN` / `OWEN_PROXY_PASSWORD` | | *пусто* | Логин и пароль прокси OwenCloud |
 | `POSTGRES_DB` / `POSTGRES_USER` | | `owenbot` | Имя БД и пользователя |
 | `LOG_LEVEL` | | `INFO` | Уровень логирования: `DEBUG`, `INFO`, `WARNING`, `ERROR` |
 
@@ -134,12 +145,15 @@ sudo docker compose logs -f bot
 
 ## Команды бота
 
-| Команда / кнопка | Действие |
+Команды доступны через кнопку **«Меню»** слева от поля ввода. Постоянной клавиатуры внизу нет —
+она мешает жесту «назад» на Android.
+
+| Команда | Действие |
 |---|---|
 | `/start` | Начало работы, справка |
-| `📟 Приборы` · `/devices` | Список приборов со статусом |
-| `✔ Прочитать все` · `/readall` | Отметить прочитанными все события по приборам с уведомлениями |
-| `🔑 Аккаунты` · `/accounts` | Добавить или удалить API-ключ OwenCloud |
+| `/devices` | Список приборов со статусом |
+| `/readall` | Отметить прочитанными все события по приборам с уведомлениями |
+| `/accounts` | Добавить или удалить API-ключ OwenCloud |
 | `/cancel` | Отменить ввод |
 
 Статусы приборов: 🔴 авария · 🟠 непрочитанные аварии · 🟢 на связи · ⚫ нет связи · 🔔 уведомления включены.
@@ -197,11 +211,23 @@ tests/            тесты (PostgreSQL + заглушки OwenCloud и Telegra
 docker compose -f docker-compose.test.yml run --rm --build tests
 ```
 
-Обновление на сервере:
+### Сборка и публикация образа
+
+Образ собирается из `Dockerfile` в корне репозитория и публикуется на Docker Hub с двумя тегами:
+номер версии и `latest` (на него ссылается `docker-compose.yml`).
 
 ```bash
-cd /opt/owenbot && sudo git pull && sudo docker compose up -d --build
+docker login                     # один раз, аккаунт whitemanprk
+VERSION=1.0.0
+docker build --platform linux/amd64 \
+  --build-arg VERSION=$VERSION \
+  -t whitemanprk/owen_bot:$VERSION -t whitemanprk/owen_bot:latest .
+docker push whitemanprk/owen_bot:$VERSION
+docker push whitemanprk/owen_bot:latest
 ```
+
+Затем на сервере: `docker compose pull && docker compose up -d`. Чтобы закрепить конкретную версию,
+укажите её вместо `latest` в `image:` в `docker-compose.yml`.
 
 ---
 

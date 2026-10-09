@@ -17,6 +17,10 @@ class OwenAuthError(OwenError):
     """Ключ недействителен или отозван."""
 
 
+class OwenForbiddenError(OwenError):
+    """Ключ рабочий, но у пользователя OwenCloud нет прав на действие (HTTP 403)."""
+
+
 class OwenWriteError(OwenError):
     def __init__(self, message: str, code: str | None = None):
         super().__init__(message)
@@ -55,8 +59,10 @@ class OwenClient:
                 raise OwenError(f"OwenCloud: HTTP {resp.status_code}, ответ не JSON")
             if isinstance(data, dict) and data.get("status") == "error":
                 raise OwenWriteError(data.get("message") or "ошибка", data.get("code"))
+            msg = data.get("message") if isinstance(data, dict) else None
+            if resp.status_code == 403:
+                raise OwenForbiddenError(msg or "нет прав")
             if resp.status_code >= 400:
-                msg = data.get("message") if isinstance(data, dict) else None
                 raise OwenError(f"OwenCloud: HTTP {resp.status_code} {msg or ''}".strip())
             return data
         raise OwenError("OwenCloud: исчерпаны попытки")

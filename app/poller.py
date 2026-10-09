@@ -90,7 +90,7 @@ class Poller:
         await self.notifier.send(
             sub["chat_id"],
             f"⚠️ Ключ OwenCloud «{sub['company']}» больше не работает ({reason}).\n"
-            "Уведомления по нему остановлены. Добавьте ключ заново в разделе «🔑 Аккаунты».")
+            "Уведомления по нему остановлены. Добавьте ключ заново командой /accounts.")
 
     async def collect(self, token: str, device_id: int) -> list[tuple[dict, str]]:
         """Новые события прибора: [(запись журнала, 'start' | 'end')]."""

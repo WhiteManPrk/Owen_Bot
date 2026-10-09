@@ -2,13 +2,12 @@
 from html import escape
 
 from aiogram import F, Router
-from aiogram.filters import Command, StateFilter
+from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from ..formatting import STATUS_TEXT, fmt_ts, params_message, parse_tz, split_message, status_icon
-from ..keyboards import BTN_DEVICES
 from ..owen import OwenError
 from ..services import Services
 from .ui import NO_ACCOUNT, chat_of, connection_token, ints, owen_failure, show
@@ -16,7 +15,6 @@ from .ui import NO_ACCOUNT, chat_of, connection_token, ints, owen_failure, show
 router = Router(name="devices")
 
 
-@router.message(StateFilter(None), F.text == BTN_DEVICES)
 @router.message(Command("devices"))
 @router.callback_query(F.data == "devs")
 async def devices(event: Message | CallbackQuery, state: FSMContext, svc: Services) -> None:

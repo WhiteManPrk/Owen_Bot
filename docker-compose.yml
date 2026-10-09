@@ -1,6 +1,6 @@
 name: owenbot
 
-# ротация `docker logs`: без неё json-файл контейнера растёт без ограничений
+# ротация `docker logs`: без неё json-файл контейнера растёт без ограничений (перезапуск его не очищает)
 x-logging: &logging
   driver: json-file
   options:
@@ -9,8 +9,7 @@ x-logging: &logging
 
 services:
   bot:
-    build: .
-    image: owenbot:latest
+    image: whitemanprk/owen_bot:latest
     restart: unless-stopped
     depends_on:
       db:
@@ -18,8 +17,12 @@ services:
     environment:
       BOT_TOKEN: ${BOT_TOKEN:?BOT_TOKEN не задан}
       TG_PROXY: ${TG_PROXY:-}
+      TG_PROXY_LOGIN: ${TG_PROXY_LOGIN:-}
+      TG_PROXY_PASSWORD: ${TG_PROXY_PASSWORD:-}
       OWEN_API_URL: ${OWEN_API_URL:-https://api.owencloud.ru/v1}
       OWEN_PROXY: ${OWEN_PROXY:-}
+      OWEN_PROXY_LOGIN: ${OWEN_PROXY_LOGIN:-}
+      OWEN_PROXY_PASSWORD: ${OWEN_PROXY_PASSWORD:-}
       POLL_INTERVAL: ${POLL_INTERVAL:-60}
       ENCRYPTION_KEY: ${ENCRYPTION_KEY:?ENCRYPTION_KEY не задан}
       ACCESS_CODE: ${ACCESS_CODE:-}

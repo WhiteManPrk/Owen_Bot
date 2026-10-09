@@ -40,8 +40,8 @@ async def connection_token(svc: Services, chat_id: int, conn_id: int):
 async def owen_failure(svc: Services, conn, e: OwenError) -> str:
     if isinstance(e, OwenAuthError):
         await svc.db.set_broken(conn["id"], True)
-        return f"⚠️ Ключ «{conn['name']}» не принят OwenCloud. Добавьте его заново в «🔑 Аккаунты»."
+        return f"⚠️ Ключ «{conn['name']}» не принят OwenCloud. Добавьте его заново: /accounts."
     return f"⚠️ OwenCloud не ответил: {e}"
 
 
-NO_ACCOUNT = "Аккаунт не найден — возможно, он удалён. Откройте «🔑 Аккаунты»."
+NO_ACCOUNT = "Аккаунт не найден — возможно, он удалён. Откройте /accounts."

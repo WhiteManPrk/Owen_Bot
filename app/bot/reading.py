@@ -4,12 +4,11 @@ from collections import Counter
 from html import escape
 
 from aiogram import F, Router
-from aiogram.filters import Command, StateFilter
+from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
-from ..keyboards import BTN_READ_ALL
 from ..owen import OwenError
 from ..services import Services
 from .ui import NO_ACCOUNT, chat_of, connection_token, ints, owen_failure, show
@@ -65,7 +64,6 @@ async def collect_unread(svc: Services, chat_id: int) -> tuple[list[tuple], list
     return items, errors
 
 
-@router.message(StateFilter(None), F.text == BTN_READ_ALL)
 @router.message(Command("readall"))
 async def read_all_ask(message: Message, svc: Services) -> None:
     items, errors = await collect_unread(svc, message.chat.id)

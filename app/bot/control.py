@@ -12,7 +12,7 @@ from aiogram.types import CallbackQuery, Message
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from ..formatting import param_value
-from ..owen import OwenError, OwenWriteError
+from ..owen import OwenError, OwenForbiddenError, OwenWriteError
 from ..services import Services
 from .ui import NO_ACCOUNT, connection_token, ints, owen_failure, show
 
@@ -20,7 +20,7 @@ log = logging.getLogger(__name__)
 router = Router(name="control")
 
 SMS_CODES = {"wrong_sms_tag", "expired_sms_code", "wrong_sms_code"}
-NUMBER_RE = re.compile(r"^-?\d+([.,]\d+)?$")
+NUMBER_RE = re.compile(r"^-?\d{1,12}([.,]\d{1,6})?$")  # короткое — чтобы влезло в кнопку «Повторить»
 STATUS_POLL_TIMEOUT = 90
 
 
@@ -69,22 +69,31 @@ async def control_menu(cb: CallbackQuery, state: FSMContext, svc: Services) -> N
     await cb.answer()
 
 
-@router.callback_query(F.data.startswith("cp:"))
-async def pick_param(cb: CallbackQuery, state: FSMContext, svc: Services) -> None:
-    conn_id, device_id, param_id = ints(cb.data)
+async def load_param(cb: CallbackQuery, svc: Services, conn_id: int, device_id: int, param_id: int):
+    """(прибор, управляемый параметр) с актуальным значением или None (ошибка уже показана)."""
     conn, token = await connection_token(svc, cb.message.chat.id, conn_id)
     if not token:
         await cb.answer(NO_ACCOUNT, show_alert=True)
-        return
+        return None
     try:
         device = await svc.device_info(token, device_id, fresh=True)
     except OwenError as e:
         await cb.answer(await owen_failure(svc, conn, e), show_alert=True)
-        return
+        return None
     p = next((x for x in manageable(device) if x["id"] == param_id), None)
     if p is None:
         await cb.answer("Параметр больше недоступен для записи", show_alert=True)
+        return None
+    return device, p
+
+
+@router.callback_query(F.data.startswith("cp:"))
+async def pick_param(cb: CallbackQuery, state: FSMContext, svc: Services) -> None:
+    conn_id, device_id, param_id = ints(cb.data)
+    loaded = await load_param(cb, svc, conn_id, device_id, param_id)
+    if loaded is None:
         return
+    device, p = loaded
     options = value_options(p)
     await state.set_state(Control.value)
     await state.update_data(conn_id=conn_id, device_id=device_id, param_id=param_id,
@@ -159,16 +168,22 @@ async def confirm_write(cb: CallbackQuery, state: FSMContext, svc: Services, bot
         await cb.answer(NO_ACCOUNT, show_alert=True)
         return
     title = f"«{escape(data['name'])}» = <b>{escape(data['label'])}</b>"
+    retry = retry_keyboard(data["conn_id"], data["device_id"], data["param_id"], data["value"])
     try:
         group_id = await svc.owen.write(token, data["param_id"], data["value"])
     except OwenWriteError as e:
         reason = ("у компании включено SMS-подтверждение команд — запись через бота не поддерживается"
                   if e.code in SMS_CODES else str(e))
-        await show(cb, f"❌ {title}\nOwenCloud отказал: {escape(reason)}")
+        await show(cb, f"❌ {title}\nOwenCloud отказал: {escape(reason)}", retry)
+        await cb.answer()
+        return
+    except OwenForbiddenError:
+        await show(cb, f"❌ {title}\nУ пользователя OwenCloud, которому принадлежит ключ, нет прав на управление "
+                       "(роль «Управляющий командами»).", retry)
         await cb.answer()
         return
     except OwenError as e:
-        await show(cb, f"❌ {title}\n{escape(await owen_failure(svc, conn, e))}")
+        await show(cb, f"❌ {title}\n{escape(await owen_failure(svc, conn, e))}", retry)
         await cb.answer()
         return
     log.info("Чат %s: запись параметра %s = %s, группа %s",
@@ -176,11 +191,39 @@ async def confirm_write(cb: CallbackQuery, state: FSMContext, svc: Services, bot
     await show(cb, f"⏳ {title}\nКоманда отправлена, ждём выполнения…")
     await cb.answer()
     asyncio.create_task(track_write(bot, svc, token, group_id, cb.message.chat.id, cb.message.message_id,
-                                    title, data["conn_id"], data["device_id"]))
+                                    title, retry))
+
+
+def retry_keyboard(conn_id: int, device_id: int, param_id: int, value: str):
+    kb = InlineKeyboardBuilder()
+    data = f"cr:{conn_id}:{device_id}:{param_id}:{value}"
+    if len(data.encode()) <= 64:
+        kb.button(text="🔁 Повторить", callback_data=data)
+    kb.button(text="🎛 Управление", callback_data=f"ctl:{conn_id}:{device_id}")
+    kb.button(text="📊 Параметры", callback_data=f"prm:{conn_id}:{device_id}")
+    kb.adjust(1, 2)
+    return kb.as_markup()
+
+
+@router.callback_query(F.data.startswith("cr:"))
+async def retry_write(cb: CallbackQuery, state: FSMContext, svc: Services) -> None:
+    """Повтор команды: снова экран подтверждения с тем же значением."""
+    _, conn_id, device_id, param_id, value = cb.data.split(":", 4)
+    loaded = await load_param(cb, svc, int(conn_id), int(device_id), int(param_id))
+    if loaded is None:
+        return
+    device, p = loaded
+    options = value_options(p)
+    label = next((lbl for v, lbl in options if v == value), value)
+    await state.set_state(Control.value)
+    await state.set_data(dict(conn_id=int(conn_id), device_id=int(device_id), param_id=int(param_id),
+                              name=p["name"], device_name=device.get("name", ""), options=options))
+    await ask_confirm(cb, state, value, label)
+    await cb.answer()
 
 
 async def track_write(bot: Bot, svc: Services, token: str, group_id: int, chat_id: int, message_id: int,
-                      title: str, conn_id: int, device_id: int) -> None:
+                      title: str, retry) -> None:
     """Следит за статусом команды и обновляет сообщение."""
     statuses: list[dict] = []
     elapsed = 0
@@ -201,10 +244,7 @@ async def track_write(bot: Bot, svc: Services, token: str, group_id: int, chat_i
     else:
         ok = all(s.get("status_code") == 3 for s in statuses)
         text = f"{'✅' if ok else '❌'} {title}\n{escape(', '.join(s.get('status', '') for s in statuses))}"
-    kb = InlineKeyboardBuilder()
-    kb.button(text="🎛 Управление", callback_data=f"ctl:{conn_id}:{device_id}")
-    kb.button(text="📊 Параметры", callback_data=f"prm:{conn_id}:{device_id}")
     try:
-        await bot.edit_message_text(text, chat_id=chat_id, message_id=message_id, reply_markup=kb.as_markup())
+        await bot.edit_message_text(text, chat_id=chat_id, message_id=message_id, reply_markup=retry)
     except TelegramBadRequest:
-        await bot.send_message(chat_id, text, reply_markup=kb.as_markup())
+        await bot.send_message(chat_id, text, reply_markup=retry)
