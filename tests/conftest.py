@@ -5,8 +5,10 @@ from cryptography.fernet import Fernet
 
 from app.crypto import TokenCrypto
 from app.db import Database
+from app.notifier import Notifier
 from app.owen import OwenAuthError
 from app.services import Services
+from app.storage.backends import PostgresBackend, SqliteBackend
 
 DEVICE = 167962
 
@@ -64,27 +66,69 @@ class FakeOwen:
         raise AssertionError("тесты не должны отправлять команды записи")
 
 
-class FakeNotifier:
+class FakeBot:
+    """Заглушка Telegram: запоминает отправленное; fail — очередь исключений для следующих отправок."""
+
     def __init__(self):
         self.sent: list[tuple[int, str, object]] = []
+        self.fail: list[Exception] = []
 
-    async def send(self, chat_id, text, markup=None):
-        self.sent.append((chat_id, text, markup))
-        return True
+    async def send_message(self, chat_id, text, reply_markup=None):
+        if self.fail:
+            raise self.fail.pop(0)
+        self.sent.append((chat_id, text, reply_markup))
 
 
-@pytest.fixture
-async def db():
+async def fresh_postgres() -> PostgresBackend:
     url = os.environ.get("TEST_DATABASE_URL")
     if not url:
         pytest.skip("TEST_DATABASE_URL не задан (запускайте через docker-compose.test.yml)")
-    database = Database(url)
+    backend = await PostgresBackend(url).open(attempts=3)
+    await backend.execute("DROP SCHEMA public CASCADE")
+    await backend.execute("CREATE SCHEMA public")
+    return backend
+
+
+async def fresh_sqlite(path) -> SqliteBackend:
+    return await SqliteBackend(str(path)).open()
+
+
+@pytest.fixture
+async def pg_backend():
+    backend = await fresh_postgres()
+    yield backend
+    await backend.close()
+
+
+@pytest.fixture
+async def sqlite_backend(tmp_path):
+    backend = await fresh_sqlite(tmp_path / "owenbot.db")
+    yield backend
+    await backend.close()
+
+
+@pytest.fixture(params=["sqlite", "postgres"])
+async def db(request, tmp_path):
+    """Каждый тест с этой фикстурой выполняется на обеих базах."""
+    backend = await (fresh_sqlite(tmp_path / "owenbot.db") if request.param == "sqlite" else fresh_postgres())
+    database = Database(backend)
     await database.open()
-    await database.pool.execute(
-        "TRUNCATE connections, subscriptions, sub_events, poll_state, log_records, chat_access "
-        "RESTART IDENTITY CASCADE")
     yield database
     await database.close()
+
+
+@pytest.fixture
+def bot():
+    return FakeBot()
+
+
+@pytest.fixture
+def notifier(bot, db):
+    return Notifier(bot, db)
+
+
+async def outbox(db: Database) -> list[dict]:
+    return await db.db.fetch("SELECT * FROM outbox ORDER BY id")
 
 
 @pytest.fixture

@@ -7,7 +7,7 @@
 
 ![Python](https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white)
 ![aiogram](https://img.shields.io/badge/aiogram-3-2CA5E0?logo=telegram&logoColor=white)
-![PostgreSQL](https://img.shields.io/badge/PostgreSQL-17-4169E1?logo=postgresql&logoColor=white)
+![SQLite / PostgreSQL](https://img.shields.io/badge/SQLite%20%7C%20PostgreSQL-003B57?logo=sqlite&logoColor=white)
 ![Docker](https://img.shields.io/badge/Docker-Compose-2496ED?logo=docker&logoColor=white)
 
 </div>
@@ -31,7 +31,8 @@ Owen Bot сам забирает журнал событий через [API Owe
 - 🔒 **Закрытый режим** — доступ к боту только по коду.
 - 👥 Работает в личных и групповых чатах.
 - 🌐 Прокси SOCKS5/SOCKS4/HTTP для Telegram, в том числе с логином и паролем.
-- 🔁 Повтор запросов при обрывах связи с Telegram и OwenCloud.
+- 🔁 Повтор запросов при обрывах связи; **недоставленные уведомления ждут в очереди** и уходят, как только связь вернётся.
+- 🗄 SQLite (по умолчанию) или PostgreSQL, перенос между ними и резервные копии одной командой.
 
 ## Как выглядят уведомления
 
@@ -82,12 +83,11 @@ sudo curl -fsSL -o .env https://raw.githubusercontent.com/WhiteManPrk/Owen_Bot/m
 sudo chmod 600 .env
 ```
 
-Сгенерируйте ключ шифрования и пароль БД:
+Сгенерируйте ключ шифрования:
 
 ```bash
 sudo docker run --rm whitemanprk/owen_bot python -c \
   "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
-openssl rand -hex 24
 ```
 
 Заполните `.env` (см. [настройки](#настройки)) и запустите:
@@ -103,6 +103,17 @@ sudo docker compose logs -f bot
 cd /opt/owenbot && sudo docker compose pull && sudo docker compose up -d
 ```
 
+> [!TIP]
+> `latest` всегда указывает на последнюю версию — обновление придёт при любом `pull`. Чтобы обновляться
+> осознанно, закрепите версию в `docker-compose.yml`: `image: whitemanprk/owen_bot:1.1.1`.
+
+#### Обновление с версий 1.0.x
+
+Можно обновиться, ничего не меняя: со старым `docker-compose.yml` (с контейнером `db` и `POSTGRES_*`)
+бот 1.1 сам продолжит работать на PostgreSQL и обновит схему базы. Переход на SQLite — по желанию,
+см. [Перенос между SQLite и PostgreSQL](#перенос-между-sqlite-и-postgresql): скачайте новые
+`docker-compose.yml` и `docker-compose.postgres.yml`, перенесите данные командой и запустите бота.
+
 ### 3. Начало работы
 
 1. Откройте бота в Telegram и нажмите **Start** (если задан `ACCESS_CODE` — отправьте код).
@@ -117,7 +128,6 @@ cd /opt/owenbot && sudo docker compose pull && sudo docker compose up -d
 |---|:-:|---|---|
 | `BOT_TOKEN` | ✅ | — | Токен бота от @BotFather |
 | `ENCRYPTION_KEY` | ✅ | — | Ключ Fernet для шифрования API-ключей OwenCloud |
-| `POSTGRES_PASSWORD` | ✅ | — | Пароль PostgreSQL |
 | `ACCESS_CODE` | | *пусто* | Код доступа. Пусто — бот открыт для всех |
 | `TG_PROXY` | | *пусто* | Прокси для Telegram: `socks5://`, `socks4://`, `http://` + `host:port` |
 | `TG_PROXY_LOGIN` / `TG_PROXY_PASSWORD` | | *пусто* | Логин и пароль прокси, если он с авторизацией |
@@ -125,7 +135,10 @@ cd /opt/owenbot && sudo docker compose pull && sudo docker compose up -d
 | `OWEN_API_URL` | | `https://api.owencloud.ru/v1` | Адрес API OwenCloud |
 | `OWEN_PROXY` | | *пусто* | Прокси для OwenCloud (обычно не нужен): `socks5://`, `socks5h://`, `http://`, `https://` |
 | `OWEN_PROXY_LOGIN` / `OWEN_PROXY_PASSWORD` | | *пусто* | Логин и пароль прокси OwenCloud |
-| `POSTGRES_DB` / `POSTGRES_USER` | | `owenbot` | Имя БД и пользователя |
+| `OUTBOX_TTL_HOURS` | | `24` | Сколько часов хранить недоставленное уведомление в очереди |
+| `BACKUP_EVERY_HOURS` / `BACKUP_KEEP` | | `0` / `7` | Автокопии базы: каждые N часов (0 — выключено), сколько хранить |
+| `POSTGRES_PASSWORD` | | — | Только для варианта с PostgreSQL (см. [База данных](#база-данных)) |
+| `POSTGRES_DB` / `POSTGRES_USER` | | `owenbot` | Имя БД и пользователя PostgreSQL |
 | `LOG_LEVEL` | | `INFO` | Уровень логирования: `DEBUG`, `INFO`, `WARNING`, `ERROR` |
 
 > [!IMPORTANT]
@@ -143,6 +156,62 @@ cd /opt/owenbot && sudo docker compose pull && sudo docker compose up -d
 Бот пишет лог в `/logs/owenbot.log` внутри контейнера (стандартная ротация: 5 файлов по 10 МБ)
 и в `docker compose logs -f bot` (3 файла по 10 МБ). Чтобы вынести логи на сервер,
 раскомментируйте в `docker-compose.yml` строки `volumes: - ./logs:/logs` — файлы появятся в `./logs`.
+
+## База данных
+
+По умолчанию — **SQLite**: файл `./data/owenbot.db`, отдельный контейнер не нужен. Для бота этого хватает
+с запасом. При желании можно работать на **PostgreSQL** — он подключается дополнительным compose-файлом:
+
+```bash
+# в .env:
+COMPOSE_FILE=docker-compose.yml:docker-compose.postgres.yml
+POSTGRES_PASSWORD=<пароль>
+```
+
+Схема базы обновляется автоматически при запуске новой версии (миграции).
+
+Какая база используется: `DB_BACKEND` (`sqlite` или `postgres`), если задан; если не задан, но настроен
+PostgreSQL (`POSTGRES_PASSWORD` или `DATABASE_URL`) — PostgreSQL; иначе SQLite. Если файл SQLite
+не лежит на томе (`./data:/data`), бот предупредит в логе: такие данные пропадут при пересоздании контейнера.
+
+### Перенос между SQLite и PostgreSQL
+
+Данные переносятся командой, при остановленном боте. Исходная база не меняется — откат = вернуть прежний вариант.
+Для переноса в compose должны быть подключены оба варианта (нужен доступ к PostgreSQL).
+
+```bash
+cd /opt/owenbot
+sudo docker compose stop bot
+# PostgreSQL → SQLite
+sudo docker compose -f docker-compose.yml -f docker-compose.postgres.yml run --rm bot \
+  python -m app.dbtool copy --from postgres --to sqlite
+# (обратно: --from sqlite --to postgres)
+```
+
+Затем переключите вариант в `.env` (`COMPOSE_FILE`) и запустите: `sudo docker compose up -d`.
+Команда проверяет, что целевая база пуста (`--force` — перезаписать), копирует всё в одной транзакции
+и сверяет число строк. Если выбран SQLite, а он пуст, хотя в PostgreSQL есть данные, — бот напишет в лог подсказку.
+
+### Резервная копия и перенос на другой сервер
+
+```bash
+sudo docker compose exec bot python -m app.dbtool backup     # без остановки бота
+```
+
+Копия — всегда файл SQLite в `./data/backups/owenbot-ГГГГММДД-ЧЧММСС.db`, независимо от варианта базы.
+Восстановление (в любой вариант, в том числе на новом сервере):
+
+```bash
+sudo docker compose stop bot
+sudo docker compose run --rm bot python -m app.dbtool restore /data/backups/owenbot-....db
+sudo docker compose up -d
+```
+
+> [!IMPORTANT]
+> Переносите копию **вместе с `ENCRYPTION_KEY`** из `.env` — без него сохранённые ключи OwenCloud не расшифровать.
+
+Автокопии: `BACKUP_EVERY_HOURS=24` и `BACKUP_KEEP=7` в `.env`. Текущее состояние базы:
+`sudo docker compose exec bot python -m app.dbtool info`.
 
 ## Команды бота
 
@@ -168,8 +237,8 @@ cd /opt/owenbot && sudo docker compose pull && sudo docker compose up -d
 └──────────────┘                   └────────────┬─────────────┘
                                                 │
                                         ┌───────▼───────┐
-                                        │  PostgreSQL   │  ключи (зашифрованы), подписки,
-                                        └───────────────┘  состояние журнала
+                                        │ SQLite / PG   │  ключи (зашифрованы), подписки,
+                                        └───────────────┘  журнал, очередь уведомлений
 ```
 
 - Поллер раз в `POLL_INTERVAL` секунд читает журнал событий каждого прибора, на который есть подписка,
@@ -177,12 +246,15 @@ cd /opt/owenbot && sudo docker compose pull && sudo docker compose up -d
 - Каждая запись журнала обрабатывается один раз: уведомления не дублируются, в том числе после перезапуска.
 - При первом опросе прибора (или после паузы больше 6 часов) старые события не рассылаются.
 - Если OwenCloud отклонил ключ, пользователь получает сообщение, а опрос по этому ключу останавливается.
+- Уведомления сначала попадают в очередь в БД, а уже из неё отправляются в Telegram — по порядку для каждого
+  чата, с повторами при обрывах связи (до `OUTBOX_TTL_HOURS`). Доставленные с опозданием помечаются
+  «⏳ доставлено с задержкой». Очередь переживает перезапуск бота.
 
 ## Безопасность
 
 - API-ключи OwenCloud хранятся в БД зашифрованными (Fernet: AES-128-CBC + HMAC-SHA256).
 - Сообщения с ключом и кодом доступа бот удаляет из чата.
-- PostgreSQL не публикует порт наружу — доступен только контейнеру бота.
+- База — файл в `./data` (SQLite) или PostgreSQL без публикации порта наружу.
 - Бот не открывает входящих портов (long polling).
 - Управление выполняется от имени пользователя OwenCloud, которому принадлежит ключ,
   и только после подтверждения. В групповом чате управлять может любой участник —
@@ -195,18 +267,20 @@ app/
   main.py         запуск бота и поллера
   config.py       переменные окружения
   owen.py         клиент OwenCloud API
-  db.py           PostgreSQL: схема и запросы
+  db.py           запросы к данным (общие для SQLite и PostgreSQL)
+  storage/        адаптеры баз и миграции схемы
+  dbtool.py       перенос между базами, резервные копии, восстановление
   crypto.py       шифрование API-ключей
   services.py     кэш справочников OwenCloud
   poller.py       опрос журнала, начало/окончание событий
-  notifier.py     отправка с учётом лимитов Telegram
+  notifier.py     очередь уведомлений и их доставка с повторами
   formatting.py   тексты уведомлений и параметров
   keyboards.py    общие клавиатуры
   bot/            обработчики: доступ, аккаунты, приборы, управление, прочтение
-tests/            тесты (PostgreSQL + заглушки OwenCloud и Telegram)
+tests/            тесты (на SQLite и PostgreSQL + заглушки OwenCloud и Telegram)
 ```
 
-Тесты запускаются в Docker вместе с временным PostgreSQL; к OwenCloud и Telegram не обращаются:
+Тесты запускаются в Docker: каждый тест с БД — на SQLite и на временном PostgreSQL; к OwenCloud и Telegram не обращаются:
 
 ```bash
 docker compose -f docker-compose.test.yml run --rm --build tests
@@ -219,7 +293,7 @@ docker compose -f docker-compose.test.yml run --rm --build tests
 
 ```bash
 docker login                     # один раз, аккаунт whitemanprk
-VERSION=1.0.0
+VERSION=1.1.1
 docker build --platform linux/amd64 \
   --build-arg VERSION=$VERSION \
   -t whitemanprk/owen_bot:$VERSION -t whitemanprk/owen_bot:latest .

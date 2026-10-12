@@ -94,7 +94,7 @@ class Poller:
         log.warning("Аккаунт %s: %s", sub["connection_id"], reason)
         self._broken_now.add(sub["connection_id"])
         await self.db.set_broken(sub["connection_id"], True)
-        await self.notifier.send(
+        await self.notifier.enqueue(
             sub["chat_id"],
             f"⚠️ Ключ OwenCloud «{sub['company']}» больше не работает ({reason}).\n"
             "Уведомления по нему остановлены. Добавьте ключ заново командой /accounts.")
@@ -175,6 +175,5 @@ class Poller:
                     continue
                 text = event_message(rec, phase, device, company)
                 markup = read_button(sub["connection_id"], rec["id"]) if rec.get("read_dt") is None else None
-                ok = await self.notifier.send(sub["chat_id"], text, markup)
-                log.debug("Уведомление в чат %s: запись %s, %s — %s", sub["chat_id"], rec["id"], phase,
-                          "отправлено" if ok else "НЕ отправлено")
+                await self.notifier.enqueue(sub["chat_id"], text, markup)
+                log.debug("Уведомление в чат %s: запись %s, %s — в очереди", sub["chat_id"], rec["id"], phase)

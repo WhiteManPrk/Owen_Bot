@@ -117,3 +117,47 @@ async def test_telegram_retry(monkeypatch):
 
 async def _noop():
     return None
+
+
+async def test_stale_callback_ignored():
+    from aiogram.exceptions import TelegramBadRequest
+    from aiogram.methods import AnswerCallbackQuery, SendMessage
+
+    from app.telegram import IgnoreStaleCallback
+
+    async def stale(bot, method):
+        raise TelegramBadRequest(method=method, message="Bad Request: query is too old and response timeout expired")
+
+    mw = IgnoreStaleCallback()
+    assert await mw(stale, None, AnswerCallbackQuery(callback_query_id="1")) is True
+    with pytest.raises(TelegramBadRequest):  # другие запросы — ошибка как есть
+        await mw(stale, None, SendMessage(chat_id=1, text="x"))
+
+
+@pytest.mark.parametrize("env, expected", [
+    ({}, "sqlite"),                                              # новая установка
+    ({"POSTGRES_PASSWORD": "p"}, "postgres"),                    # старый compose 1.0.x без DB_BACKEND
+    ({"DATABASE_URL": "postgresql://u:p@h/db"}, "postgres"),
+    ({"POSTGRES_PASSWORD": "p", "DB_BACKEND": "sqlite"}, "sqlite"),  # явный выбор важнее
+    ({"DB_BACKEND": "POSTGRES", "POSTGRES_PASSWORD": "p"}, "postgres"),
+])
+def test_db_backend_choice(monkeypatch, env, expected):
+    from app.config import db_backend
+    for name in ("DB_BACKEND", "POSTGRES_PASSWORD", "DATABASE_URL"):
+        monkeypatch.delenv(name, raising=False)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    assert db_backend() == expected
+
+
+def test_db_backend_invalid(monkeypatch):
+    from app.config import db_backend
+    monkeypatch.setenv("DB_BACKEND", "mysql")
+    with pytest.raises(SystemExit):
+        db_backend()
+
+
+def test_is_volume(tmp_path):
+    from app.config import is_volume
+    assert is_volume("/proc")           # отдельная файловая система
+    assert not is_volume("/usr/lib")    # слой образа

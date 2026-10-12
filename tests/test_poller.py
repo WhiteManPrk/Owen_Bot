@@ -1,17 +1,19 @@
+import json
 import time
 
 import pytest
 
 from app.poller import OVERLAP, RESEED_AFTER, Poller
 
-from .conftest import DEVICE, FakeNotifier
+from .conftest import DEVICE, outbox
+
 
 CHAT = 111
 
 
-@pytest.fixture
-def notifier():
-    return FakeNotifier()
+async def sent(svc) -> list[tuple[int, str, str | None]]:
+    """Что поллер поставил в очередь уведомлений."""
+    return [(m["chat_id"], m["text"], m["markup"]) for m in await outbox(svc.db)]
 
 
 @pytest.fixture
@@ -33,7 +35,7 @@ async def test_first_poll_does_not_send_history(svc, owen, poller, notifier):
     owen.add(2, now - 100)  # ещё идёт
     await subscribe(svc)
     await poller.tick()
-    assert notifier.sent == []
+    assert (await sent(svc)) == []
     assert await svc.db.open_records(DEVICE) == [2]
 
 
@@ -45,17 +47,17 @@ async def test_start_and_end_sent_once(svc, owen, poller, notifier):
     owen.add(10, now - 5, message="Не удалось поджечь")
     await poller.tick()
     await poller.tick()
-    assert len(notifier.sent) == 1
-    chat, text, markup = notifier.sent[0]
+    assert len((await sent(svc))) == 1
+    chat, text, markup = (await sent(svc))[0]
     assert chat == CHAT
     assert "Котельная РиМ — авария" in text and "Не удалось поджечь" in text
-    assert markup.inline_keyboard[0][0].callback_data == "rd:1:10"
+    assert json.loads(markup)["inline_keyboard"][0][0]["callback_data"] == "rd:1:10"
 
     owen.log[10]["end_dt"] = now
     await poller.tick()
     await poller.tick()
-    assert len(notifier.sent) == 2
-    assert "авария завершена" in notifier.sent[1][1]
+    assert len((await sent(svc))) == 2
+    assert "авария завершена" in (await sent(svc))[1][1]
     assert await svc.db.open_records(DEVICE) == []
 
 
@@ -65,8 +67,8 @@ async def test_short_event_is_single_end_message(svc, owen, poller, notifier):
     await poller.tick()
     owen.add(20, now - 30, now - 10)
     await poller.tick()
-    assert len(notifier.sent) == 1
-    assert "авария завершена" in notifier.sent[0][1]
+    assert len((await sent(svc))) == 1
+    assert "авария завершена" in (await sent(svc))[0][1]
 
 
 async def test_filters(svc, owen, poller, notifier):
@@ -80,7 +82,7 @@ async def test_filters(svc, owen, poller, notifier):
     owen.add(31, now - 4, critical=1, event_id=100, message="Авария")
     await poller.tick()
     got = {}
-    for chat, text, _ in notifier.sent:
+    for chat, text, _ in (await sent(svc)):
         got.setdefault(chat, []).append(text.split("\n")[1])
     assert got[1] == ["Авария"]
     assert got[2] == ["Котельная в режиме поджига", "Авария"]
@@ -94,7 +96,7 @@ async def test_disabled_subscription_gets_nothing(svc, owen, poller, notifier):
     await svc.db.save_subscription(CHAT, DEVICE, conn_id, enabled=False)
     owen.add(40, now - 5)
     await poller.tick()
-    assert notifier.sent == []
+    assert (await sent(svc)) == []
 
 
 async def test_end_of_old_open_record_found_by_id(svc, owen, poller, notifier):
@@ -107,8 +109,8 @@ async def test_end_of_old_open_record_found_by_id(svc, owen, poller, notifier):
 
     owen.log[50]["end_dt"] = now - 1
     await poller.tick()
-    assert len(notifier.sent) == 1
-    assert "завершена" in notifier.sent[0][1]
+    assert len((await sent(svc))) == 1
+    assert "завершена" in (await sent(svc))[0][1]
     assert "by_ids" in owen.calls
 
 
@@ -119,17 +121,17 @@ async def test_reseed_after_long_pause(svc, owen, poller, notifier):
     await svc.db.set_cursor(DEVICE, now - 10 * 3600, now - RESEED_AFTER - 60)
     owen.add(60, now - 3600)  # «пропущенное» за время паузы
     await poller.tick()
-    assert notifier.sent == []
+    assert (await sent(svc)) == []
 
 
 async def test_bad_key_marks_connection_broken_once(svc, owen, poller, notifier):
     await subscribe(svc, token="bad")
     await poller.tick()
     await poller.tick()
-    assert len(notifier.sent) == 1
-    assert "больше не работает" in notifier.sent[0][1]
+    assert len((await sent(svc))) == 1
+    assert "больше не работает" in (await sent(svc))[0][1]
     conn = (await svc.db.connections(CHAT))[0]
-    assert conn["broken"] is True
+    assert bool(conn["broken"]) is True
 
 
 async def test_access_code_limits_recipients(svc, owen, notifier):
@@ -143,7 +145,7 @@ async def test_access_code_limits_recipients(svc, owen, notifier):
     await poller.tick()
     owen.add(80, now - 5)
     await poller.tick()
-    assert [chat for chat, _, _ in notifier.sent] == [1]
+    assert [chat for chat, _, _ in (await sent(svc))] == [1]
     assert await svc.db.has_access(1, "h1") and not await svc.db.has_access(3, "h1")
 
 
@@ -154,4 +156,4 @@ async def test_company_shown_only_with_several_accounts(svc, owen, poller, notif
     await poller.tick()
     owen.add(70, now - 5)
     await poller.tick()
-    assert "· Компания РИМ" in notifier.sent[0][1]
+    assert "· Компания РИМ" in (await sent(svc))[0][1]

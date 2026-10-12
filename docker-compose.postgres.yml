@@ -1,0 +1,36 @@
+# Вариант с PostgreSQL: подключается поверх docker-compose.yml
+#   docker compose -f docker-compose.yml -f docker-compose.postgres.yml up -d
+# или один раз в .env:  COMPOSE_FILE=docker-compose.yml:docker-compose.postgres.yml
+# Резервные копии (python -m app.dbtool backup) по-прежнему пишутся в ./data/backups.
+
+services:
+  bot:
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DB_BACKEND: postgres
+      POSTGRES_HOST: db
+      POSTGRES_DB: ${POSTGRES_DB:-owenbot}
+      POSTGRES_USER: ${POSTGRES_USER:-owenbot}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD не задан}
+
+  db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-owenbot}
+      POSTGRES_USER: ${POSTGRES_USER:-owenbot}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD не задан}
+    volumes:
+      - ./pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
