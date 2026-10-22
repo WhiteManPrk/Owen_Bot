@@ -16,7 +16,7 @@ import os
 import sys
 from datetime import datetime, timezone
 
-from .config import db_backend, postgres_configured, postgres_dsn, sqlite_path
+from .config import db_backend, postgres_dsn, sqlite_path
 from .storage.backends import Backend, SqliteBackend, open_backend
 from .storage.schema import SERIAL_COLUMNS, TABLES, convert, migrate, table_columns, table_exists
 
@@ -120,22 +120,6 @@ async def backup_loop(directory: str, every_hours: int, keep: int) -> None:
             raise
         except Exception:
             log.exception("Автобэкап не удался")
-
-
-async def migration_hint(db_is_empty: bool) -> None:
-    """Log a hint when SQLite is selected and empty but PostgreSQL has data."""
-    if not db_is_empty or not postgres_configured():
-        return
-    try:
-        pg = await asyncio.wait_for(open_kind("postgres", attempts=1), timeout=5)
-    except Exception:
-        return
-    try:
-        if await table_exists(pg, "connections") and await pg.fetchval("SELECT count(*) FROM connections"):
-            log.warning("База SQLite пуста, но в PostgreSQL есть данные. Перенести (бот остановлен): "
-                        "python -m app.dbtool copy --from postgres --to sqlite")
-    finally:
-        await pg.close()
 
 
 def print_report(report: dict[str, tuple[int, int]]) -> None:

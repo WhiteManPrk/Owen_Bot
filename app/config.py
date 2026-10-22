@@ -38,18 +38,27 @@ def proxy_url(url: str | None, login: str | None, password: str | None) -> str |
 DB_BACKENDS = ("sqlite", "postgres")
 
 
-def postgres_configured() -> bool:
-    return bool(_env("DATABASE_URL") or _env("POSTGRES_PASSWORD"))
+POSTGRES_REQUIRED = ("POSTGRES_HOST", "POSTGRES_DB", "POSTGRES_USER", "POSTGRES_PASSWORD")
+
+
+def postgres_settings() -> dict[str, str]:
+    missing = [name for name in POSTGRES_REQUIRED if not _env(name)]
+    if missing:
+        raise SystemExit(f"Для DB_BACKEND=postgres задайте в .env: {', '.join(missing)}")
+    return {name: _env(name) for name in POSTGRES_REQUIRED} | {"POSTGRES_PORT": _env("POSTGRES_PORT", "5432")}
 
 
 def postgres_dsn() -> str:
-    return _env("DATABASE_URL") or "postgresql://{u}:{p}@{h}:{port}/{db}".format(
-        u=quote(_env("POSTGRES_USER", "owenbot"), safe=""),
-        p=quote(_required("POSTGRES_PASSWORD"), safe=""),
-        h=_env("POSTGRES_HOST", "db"),
-        port=_env("POSTGRES_PORT", "5432"),
-        db=_env("POSTGRES_DB", "owenbot"),
-    )
+    s = postgres_settings()
+    return "postgresql://{u}:{p}@{h}:{port}/{db}".format(
+        u=quote(s["POSTGRES_USER"], safe=""), p=quote(s["POSTGRES_PASSWORD"], safe=""),
+        h=s["POSTGRES_HOST"], port=s["POSTGRES_PORT"], db=quote(s["POSTGRES_DB"], safe=""))
+
+
+def postgres_target() -> str:
+    """user@host:port/db for logs, without the password."""
+    s = postgres_settings()
+    return f"{s['POSTGRES_USER']}@{s['POSTGRES_HOST']}:{s['POSTGRES_PORT']}/{s['POSTGRES_DB']}"
 
 
 def sqlite_path() -> str:
@@ -57,10 +66,9 @@ def sqlite_path() -> str:
 
 
 def db_backend() -> str:
-    """Explicit DB_BACKEND wins; otherwise postgres when PostgreSQL is configured
-    (the 1.0.x compose file), else sqlite.
-    """
-    backend = (_env("DB_BACKEND") or ("postgres" if postgres_configured() else "sqlite")).lower()
+    backend = (_env("DB_BACKEND") or "").lower()
+    if not backend:
+        raise SystemExit("DB_BACKEND не задан. Добавьте в .env строку DB_BACKEND=sqlite или DB_BACKEND=postgres")
     if backend not in DB_BACKENDS:
         raise SystemExit(f"DB_BACKEND: «{backend}» — допустимо sqlite или postgres")
     return backend
@@ -107,7 +115,7 @@ class Config:
     def from_env(cls) -> "Config":
         backend = db_backend()
         if backend == "postgres":
-            postgres_dsn()  # fail fast if POSTGRES_PASSWORD is missing
+            postgres_settings()  # fail fast on missing POSTGRES_* settings
         return cls(
             bot_token=_required("BOT_TOKEN"),
             tg_proxy=check_scheme("TG_PROXY", proxy_url(

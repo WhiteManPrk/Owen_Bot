@@ -1,8 +1,8 @@
 name: owenbot
 
-# База по умолчанию — SQLite в ./data. Для PostgreSQL добавьте docker-compose.postgres.yml (см. README).
+# Bot only: SQLite (./data) or an external PostgreSQL — chosen by DB_BACKEND in .env.
+# Bot together with a PostgreSQL container: docker-compose.postgres.yml.
 
-# ротация `docker logs`: без неё json-файл контейнера растёт без ограничений (перезапуск его не очищает)
 x-logging: &logging
   driver: json-file
   options:
@@ -25,8 +25,13 @@ services:
       POLL_INTERVAL: ${POLL_INTERVAL:-60}
       ENCRYPTION_KEY: ${ENCRYPTION_KEY:?ENCRYPTION_KEY не задан}
       ACCESS_CODE: ${ACCESS_CODE:-}
-      DB_BACKEND: sqlite
+      DB_BACKEND: ${DB_BACKEND:?DB_BACKEND не задан (sqlite или postgres)}
       SQLITE_PATH: /data/owenbot.db
+      POSTGRES_HOST: ${POSTGRES_HOST:-}
+      POSTGRES_PORT: ${POSTGRES_PORT:-5432}
+      POSTGRES_DB: ${POSTGRES_DB:-}
+      POSTGRES_USER: ${POSTGRES_USER:-}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-}
       OUTBOX_TTL_HOURS: ${OUTBOX_TTL_HOURS:-24}
       BACKUP_EVERY_HOURS: ${BACKUP_EVERY_HOURS:-0}
       BACKUP_KEEP: ${BACKUP_KEEP:-7}
@@ -35,6 +40,8 @@ services:
       LOG_DIR: /logs
     volumes:
       - ./data:/data
-      # чтобы вынести логи на сервер, раскомментируйте:
       # - ./logs:/logs
+    # PostgreSQL on this host: POSTGRES_HOST=host.docker.internal
+    # extra_hosts:
+    #   - "host.docker.internal:host-gateway"
     logging: *logging

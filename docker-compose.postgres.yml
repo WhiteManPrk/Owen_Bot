@@ -1,26 +1,58 @@
-# Вариант с PostgreSQL: подключается поверх docker-compose.yml
-#   docker compose -f docker-compose.yml -f docker-compose.postgres.yml up -d
-# или один раз в .env:  COMPOSE_FILE=docker-compose.yml:docker-compose.postgres.yml
-# Резервные копии (python -m app.dbtool backup) по-прежнему пишутся в ./data/backups.
+name: owenbot
+
+# Bot + PostgreSQL container. In .env: DB_BACKEND=postgres, POSTGRES_HOST=db, POSTGRES_DB/USER/PASSWORD.
+# The container is created with the same POSTGRES_DB/USER/PASSWORD the bot connects with.
+#   docker compose -f docker-compose.postgres.yml up -d   (or COMPOSE_FILE=docker-compose.postgres.yml in .env)
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
 
 services:
   bot:
+    image: whitemanprk/owen_bot:latest
+    restart: unless-stopped
     depends_on:
       db:
         condition: service_healthy
     environment:
-      DB_BACKEND: postgres
-      POSTGRES_HOST: db
-      POSTGRES_DB: ${POSTGRES_DB:-owenbot}
-      POSTGRES_USER: ${POSTGRES_USER:-owenbot}
+      BOT_TOKEN: ${BOT_TOKEN:?BOT_TOKEN не задан}
+      TG_PROXY: ${TG_PROXY:-}
+      TG_PROXY_LOGIN: ${TG_PROXY_LOGIN:-}
+      TG_PROXY_PASSWORD: ${TG_PROXY_PASSWORD:-}
+      OWEN_API_URL: ${OWEN_API_URL:-https://api.owencloud.ru/v1}
+      OWEN_PROXY: ${OWEN_PROXY:-}
+      OWEN_PROXY_LOGIN: ${OWEN_PROXY_LOGIN:-}
+      OWEN_PROXY_PASSWORD: ${OWEN_PROXY_PASSWORD:-}
+      POLL_INTERVAL: ${POLL_INTERVAL:-60}
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:?ENCRYPTION_KEY не задан}
+      ACCESS_CODE: ${ACCESS_CODE:-}
+      DB_BACKEND: ${DB_BACKEND:?DB_BACKEND не задан (sqlite или postgres)}
+      SQLITE_PATH: /data/owenbot.db
+      POSTGRES_HOST: ${POSTGRES_HOST:?POSTGRES_HOST не задан (для этого файла — db)}
+      POSTGRES_PORT: ${POSTGRES_PORT:-5432}
+      POSTGRES_DB: ${POSTGRES_DB:?POSTGRES_DB не задан}
+      POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER не задан}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD не задан}
+      OUTBOX_TTL_HOURS: ${OUTBOX_TTL_HOURS:-24}
+      BACKUP_EVERY_HOURS: ${BACKUP_EVERY_HOURS:-0}
+      BACKUP_KEEP: ${BACKUP_KEEP:-7}
+      BACKUP_DIR: /data/backups
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      LOG_DIR: /logs
+    volumes:
+      - ./data:/data
+      # - ./logs:/logs
+    logging: *logging
 
   db:
     image: postgres:17-alpine
     restart: unless-stopped
     environment:
-      POSTGRES_DB: ${POSTGRES_DB:-owenbot}
-      POSTGRES_USER: ${POSTGRES_USER:-owenbot}
+      POSTGRES_DB: ${POSTGRES_DB:?POSTGRES_DB не задан}
+      POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER не задан}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD не задан}
     volumes:
       - ./pgdata:/var/lib/postgresql/data
@@ -29,8 +61,4 @@ services:
       interval: 5s
       timeout: 3s
       retries: 20
-    logging:
-      driver: json-file
-      options:
-        max-size: "10m"
-        max-file: "3"
+    logging: *logging

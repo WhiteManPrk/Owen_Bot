@@ -134,27 +134,51 @@ async def test_stale_callback_ignored():
         await mw(stale, None, SendMessage(chat_id=1, text="x"))
 
 
-@pytest.mark.parametrize("env, expected", [
-    ({}, "sqlite"),  # new install
-    ({"POSTGRES_PASSWORD": "p"}, "postgres"),  # 1.0.x compose without DB_BACKEND
-    ({"DATABASE_URL": "postgresql://u:p@h/db"}, "postgres"),
-    ({"POSTGRES_PASSWORD": "p", "DB_BACKEND": "sqlite"}, "sqlite"),  # explicit choice wins
-    ({"DB_BACKEND": "POSTGRES", "POSTGRES_PASSWORD": "p"}, "postgres"),
-])
-def test_db_backend_choice(monkeypatch, env, expected):
-    from app.config import db_backend
-    for name in ("DB_BACKEND", "POSTGRES_PASSWORD", "DATABASE_URL"):
+PG_ENV = {"POSTGRES_HOST": "10.0.0.5", "POSTGRES_DB": "bot", "POSTGRES_USER": "u", "POSTGRES_PASSWORD": "p@ss:/1"}
+
+
+@pytest.fixture
+def clean_db_env(monkeypatch):
+    for name in ("DB_BACKEND", "POSTGRES_PORT", *PG_ENV):
         monkeypatch.delenv(name, raising=False)
-    for name, value in env.items():
-        monkeypatch.setenv(name, value)
+    return monkeypatch
+
+
+@pytest.mark.parametrize("value, expected", [("sqlite", "sqlite"), ("POSTGRES", "postgres")])
+def test_db_backend_choice(clean_db_env, value, expected):
+    from app.config import db_backend
+    clean_db_env.setenv("DB_BACKEND", value)
     assert db_backend() == expected
 
 
-def test_db_backend_invalid(monkeypatch):
+@pytest.mark.parametrize("value, message", [(None, "DB_BACKEND не задан"), ("mysql", "mysql")])
+def test_db_backend_required(clean_db_env, value, message):
     from app.config import db_backend
-    monkeypatch.setenv("DB_BACKEND", "mysql")
-    with pytest.raises(SystemExit):
+    for name, v in PG_ENV.items():
+        clean_db_env.setenv(name, v)  # PostgreSQL settings alone do not select the backend
+    if value:
+        clean_db_env.setenv("DB_BACKEND", value)
+    with pytest.raises(SystemExit, match=message):
         db_backend()
+
+
+def test_postgres_dsn(clean_db_env):
+    from app.config import postgres_dsn, postgres_target
+    for name, value in PG_ENV.items():
+        clean_db_env.setenv(name, value)
+    assert postgres_dsn() == "postgresql://u:p%40ss%3A%2F1@10.0.0.5:5432/bot"
+    clean_db_env.setenv("POSTGRES_PORT", "6432")
+    assert postgres_target() == "u@10.0.0.5:6432/bot"
+
+
+@pytest.mark.parametrize("missing", list(PG_ENV))
+def test_postgres_settings_required(clean_db_env, missing):
+    from app.config import postgres_settings
+    for name, value in PG_ENV.items():
+        if name != missing:
+            clean_db_env.setenv(name, value)
+    with pytest.raises(SystemExit, match=missing):
+        postgres_settings()
 
 
 def test_is_volume(tmp_path):
