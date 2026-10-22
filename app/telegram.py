@@ -1,4 +1,4 @@
-"""Сессия Telegram: прокси и повтор запросов при сетевых сбоях."""
+"""Telegram session: proxy and retries on network errors."""
 import asyncio
 import logging
 
@@ -15,9 +15,9 @@ ATTEMPTS = 3
 
 
 class RetryOnNetworkError(BaseRequestMiddleware):
-    """Повторяет запрос, если соединение оборвалось (например, его сбросил прокси).
+    """Retry a request when the connection drops (e.g. reset by the proxy).
 
-    getUpdates не трогаем — aiogram повторяет его сам.
+    getUpdates is left alone: aiogram retries it itself.
     """
 
     async def __call__(self, make_request: NextRequestMiddlewareType[TelegramType], bot: Bot,
@@ -38,9 +38,9 @@ STALE_CALLBACK = ("query is too old", "query id is invalid")
 
 
 class IgnoreStaleCallback(BaseRequestMiddleware):
-    """Нажатие кнопки, дошедшее после сбоя связи, Telegram уже не даёт «подтвердить» (answerCallbackQuery).
+    """A button press delivered after an outage can no longer be answered (answerCallbackQuery).
 
-    Это не повод прерывать обработчик: считаем подтверждение выполненным, результат всё равно покажется.
+    Treat the answer as done, so the handler still shows its result.
     """
 
     async def __call__(self, make_request: NextRequestMiddlewareType[TelegramType], bot: Bot,

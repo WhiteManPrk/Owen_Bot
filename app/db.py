@@ -1,4 +1,4 @@
-"""Работа с данными бота. Один набор запросов для SQLite и PostgreSQL (через адаптер storage.backends)."""
+"""Data access shared by SQLite and PostgreSQL (see storage.backends)."""
 import logging
 import time
 
@@ -29,8 +29,6 @@ class Database:
     async def close(self) -> None:
         await self.db.close()
 
-    # --- аккаунты OwenCloud ---
-
     async def add_connection(self, chat_id: int, token_enc: str, token_hash: str, name: str) -> int:
         return await self.db.fetchval(
             "INSERT INTO connections (chat_id, token_enc, token_hash, name) VALUES (?, ?, ?, ?) "
@@ -50,14 +48,11 @@ class Database:
     async def set_broken(self, conn_id: int, broken: bool) -> None:
         await self.db.execute("UPDATE connections SET broken = ? WHERE id = ?", broken, conn_id)
 
-    # --- подписки ---
-
     async def subscription(self, chat_id: int, device_id: int) -> dict | None:
         return await self.db.fetchrow(
             "SELECT * FROM subscriptions WHERE chat_id = ? AND device_id = ?", chat_id, device_id)
 
     async def enabled_devices(self, chat_id: int) -> dict[int, int]:
-        """device_id -> connection_id для включённых подписок чата."""
         rows = await self.db.fetch(
             "SELECT device_id, connection_id FROM subscriptions WHERE chat_id = ? AND enabled = ?", chat_id, True)
         return {r["device_id"]: r["connection_id"] for r in rows}
@@ -65,7 +60,7 @@ class Database:
     async def save_subscription(self, chat_id: int, device_id: int, conn_id: int,
                                 enabled: bool | None = None, mode: str | None = None) -> None:
         assert mode is None or mode in MODES
-        # None — «не менять»: при вставке берётся значение по умолчанию, при обновлении — текущее
+        # None means keep: the default on insert, the current value on update
         await self.db.execute(
             "INSERT INTO subscriptions (chat_id, device_id, connection_id, enabled, mode) VALUES (?, ?, ?, ?, ?) "
             "ON CONFLICT (chat_id, device_id) DO UPDATE SET connection_id = excluded.connection_id, "
@@ -86,9 +81,9 @@ class Database:
                                      [(chat_id, device_id, e) for e in event_ids])
 
     async def active_subscriptions(self, access_hash: str | None = None) -> list[dict]:
-        """Включённые подписки с рабочими ключами + выбранные события (для режима custom).
+        """Enabled subscriptions with working keys plus selected events.
 
-        access_hash — если бот закрыт кодом, только чаты, введшие текущий код.
+        access_hash limits the result to chats that entered the current access code.
         """
         sql = ("SELECT s.chat_id, s.device_id, s.mode, c.id AS connection_id, c.token_enc, c.name AS company, "
                "  (SELECT count(*) FROM connections c2 WHERE c2.chat_id = s.chat_id) AS chat_connections "
@@ -109,8 +104,6 @@ class Database:
     async def disable_chat(self, chat_id: int) -> None:
         await self.db.execute("UPDATE subscriptions SET enabled = ? WHERE chat_id = ?", False, chat_id)
 
-    # --- доступ по коду ---
-
     async def has_access(self, chat_id: int, code_hash: str) -> bool:
         return bool(await self.db.fetchval(
             "SELECT 1 FROM chat_access WHERE chat_id = ? AND code_hash = ?", chat_id, code_hash))
@@ -121,7 +114,8 @@ class Database:
             "ON CONFLICT (chat_id) DO UPDATE SET code_hash = excluded.code_hash, granted_at = CURRENT_TIMESTAMP",
             chat_id, code_hash)
 
-    # --- состояние поллера ---
+    async def rehash_access(self, old_hash: str, new_hash: str) -> None:
+        await self.db.execute("UPDATE chat_access SET code_hash = ? WHERE code_hash = ?", new_hash, old_hash)
 
     async def poll_state(self, device_id: int) -> dict | None:
         return await self.db.fetchrow("SELECT cursor, polled_at FROM poll_state WHERE device_id = ?", device_id)
@@ -133,7 +127,6 @@ class Database:
             device_id, cursor, polled_at)
 
     async def known_records(self, log_ids: list[int]) -> dict[int, bool]:
-        """log_id -> ended для уже обработанных записей журнала."""
         if not log_ids:
             return {}
         rows = await self.db.fetch(f"SELECT log_id, ended FROM log_records WHERE log_id IN ({_in(log_ids)})",
@@ -157,16 +150,16 @@ class Database:
     async def cleanup_records(self, older_than: int) -> None:
         await self.db.execute("DELETE FROM log_records WHERE ended = ? AND start_dt < ?", True, older_than)
 
-    # --- очередь уведомлений ---
-
-    async def outbox_add(self, chat_id: int, text: str, markup: str | None) -> None:
+    async def outbox_add(self, chat_id: int, text: str, markup: str | None, log_id: int | None = None,
+                         device_id: int | None = None, connection_id: int | None = None, reply: bool = False) -> None:
         now = int(time.time())
         await self.db.execute(
-            "INSERT INTO outbox (chat_id, text, markup, created_at, next_try_at) VALUES (?, ?, ?, ?, ?)",
-            chat_id, text, markup, now, now)
+            "INSERT INTO outbox (chat_id, text, markup, created_at, next_try_at, log_id, device_id, connection_id, reply) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            chat_id, text, markup, now, now, log_id, device_id, connection_id, int(reply))
 
     async def outbox_heads(self, now: int) -> list[dict]:
-        """Самое старое сообщение каждого чата, если ему пора отправляться (порядок внутри чата сохраняется)."""
+        """Oldest due message of every chat, so the order within a chat is preserved."""
         return await self.db.fetch(
             "SELECT o.* FROM outbox o WHERE o.id IN (SELECT min(id) FROM outbox GROUP BY chat_id) "
             "AND o.next_try_at <= ? ORDER BY o.id", now)
@@ -192,3 +185,34 @@ class Database:
 
     async def outbox_size(self) -> int:
         return await self.db.fetchval("SELECT count(*) FROM outbox") or 0
+
+    async def event_message(self, chat_id: int, log_id: int) -> dict | None:
+        return await self.db.fetchrow(
+            "SELECT * FROM event_messages WHERE chat_id = ? AND log_id = ?", chat_id, log_id)
+
+    async def save_event_message(self, chat_id: int, log_id: int, message_id: int, device_id: int,
+                                 connection_id: int, text: str, has_button: bool) -> None:
+        await self.db.execute(
+            "INSERT INTO event_messages (chat_id, log_id, message_id, device_id, connection_id, text, has_button, "
+            "created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (chat_id, log_id) DO UPDATE SET "
+            "message_id = excluded.message_id, text = excluded.text, has_button = excluded.has_button",
+            chat_id, log_id, message_id, device_id, connection_id, text, int(has_button), int(time.time()))
+
+    async def messages_with_button(self, device_id: int | None = None, log_ids: list[int] | None = None) -> list[dict]:
+        sql, args = "SELECT * FROM event_messages WHERE has_button = 1", []
+        if device_id is not None:
+            sql += " AND device_id = ?"
+            args.append(device_id)
+        if log_ids is not None:
+            if not log_ids:
+                return []
+            sql += f" AND log_id IN ({_in(log_ids)})"
+            args += log_ids
+        return await self.db.fetch(sql + " ORDER BY log_id", *args)
+
+    async def button_removed(self, chat_id: int, log_id: int) -> None:
+        await self.db.execute(
+            "UPDATE event_messages SET has_button = 0 WHERE chat_id = ? AND log_id = ?", chat_id, log_id)
+
+    async def cleanup_event_messages(self, older_than: int) -> None:
+        await self.db.execute("DELETE FROM event_messages WHERE created_at < ?", older_than)

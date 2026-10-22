@@ -1,4 +1,3 @@
-"""Список приборов, карточка прибора, выбор событий, текущие параметры."""
 from html import escape
 
 from aiogram import F, Router
@@ -10,6 +9,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from ..formatting import STATUS_TEXT, fmt_ts, params_message, parse_tz, split_message, status_icon
 from ..owen import OwenError
 from ..services import Services
+from .reading import unread_alarms
 from .ui import NO_ACCOUNT, chat_of, connection_token, ints, owen_failure, show
 
 router = Router(name="devices")
@@ -40,7 +40,7 @@ async def devices(event: Message | CallbackQuery, state: FSMContext, svc: Servic
                 raise OwenError("ключ не расшифровывается")
             items = await svc.owen.devices(token)
         except OwenError as e:
-            lines.append(f"\n{escape(conn['name'])}: {await owen_failure(svc, conn, e)}")
+            lines.append(f"\n{escape(conn['name'])}: {escape(await owen_failure(svc, conn, e))}")
             continue
         if conn["broken"]:
             await svc.db.set_broken(conn["id"], False)
@@ -109,18 +109,44 @@ async def render_card(cb: CallbackQuery, svc: Services, conn_id: int, device_id:
     kb.button(text="⚙️ Выбор событий", callback_data=f"evs:{conn_id}:{device_id}")
     kb.button(text="📊 Параметры", callback_data=f"prm:{conn_id}:{device_id}")
     kb.button(text="🎛 Управление", callback_data=f"ctl:{conn_id}:{device_id}")
+    try:
+        alarms = len(await unread_alarms(svc, token, device_id))
+    except OwenError:
+        alarms = 0
+    if alarms:
+        kb.button(text=f"☑️ Прочитать аварии ({alarms})", callback_data=f"ra:{conn_id}:{device_id}")
     kb.button(text="⬅️ К списку", callback_data="devs")
-    kb.adjust(1, 1, 2, 1)
+    kb.adjust(1, 1, 2, *([1] if alarms else []), 1)
     await show(cb, text, kb.as_markup())
     await cb.answer()
+
+
+async def device_access(cb: CallbackQuery, svc: Services, conn_id: int, device_id: int) -> bool:
+    """True if the chat owns the account and its key sees the device; otherwise shows an alert.
+
+    Callback data can be forged by a modified client, so a subscription is never saved
+    for a device the key cannot access (its notifications would leak to this chat).
+    """
+    conn, token = await connection_token(svc, cb.message.chat.id, conn_id)
+    if not token:
+        await cb.answer(NO_ACCOUNT, show_alert=True)
+        return False
+    try:
+        found = await svc.owen.devices(token, [device_id])
+    except OwenError as e:
+        await cb.answer(await owen_failure(svc, conn, e), show_alert=True)
+        return False
+    if not any(d["id"] == device_id for d in found):
+        await cb.answer("Прибор недоступен этому ключу", show_alert=True)
+        return False
+    return True
 
 
 @router.callback_query(F.data.startswith("ntf:"))
 async def toggle_notifications(cb: CallbackQuery, svc: Services) -> None:
     conn_id, device_id = ints(cb.data)
     chat_id = cb.message.chat.id
-    if await svc.db.connection(conn_id, chat_id) is None:
-        await cb.answer(NO_ACCOUNT, show_alert=True)
+    if not await device_access(cb, svc, conn_id, device_id):
         return
     sub = await svc.db.subscription(chat_id, device_id)
     enabled = bool(sub and sub["enabled"] and sub["connection_id"] == conn_id)
@@ -128,7 +154,6 @@ async def toggle_notifications(cb: CallbackQuery, svc: Services) -> None:
     await render_card(cb, svc, conn_id, device_id)
 
 
-# --- выбор событий ---
 
 def _effective(sub, criteria: list[dict], selected: set[int]) -> set[int]:
     if sub is None or sub["mode"] == "critical":
@@ -176,11 +201,13 @@ async def render_events(cb: CallbackQuery, svc: Services, conn_id: int, device_i
 async def toggle_event(cb: CallbackQuery, svc: Services) -> None:
     conn_id, device_id, event_id = ints(cb.data)
     chat_id = cb.message.chat.id
-    conn, token = await connection_token(svc, chat_id, conn_id)
-    if not token:
-        await cb.answer(NO_ACCOUNT, show_alert=True)
+    if not await device_access(cb, svc, conn_id, device_id):
         return
+    _, token = await connection_token(svc, chat_id, conn_id)
     criteria = await svc.criteria(token, device_id)
+    if event_id not in {c["id"] for c in criteria}:
+        await cb.answer("Событие не найдено", show_alert=True)
+        return
     sub = await svc.db.subscription(chat_id, device_id)
     chosen = _effective(sub, criteria, await svc.db.selected_events(chat_id, device_id))
     chosen ^= {event_id}
@@ -194,8 +221,7 @@ async def events_mode(cb: CallbackQuery, svc: Services) -> None:
     _, conn_id, device_id, mode = cb.data.split(":")
     conn_id, device_id = int(conn_id), int(device_id)
     chat_id = cb.message.chat.id
-    if await svc.db.connection(conn_id, chat_id) is None:
-        await cb.answer(NO_ACCOUNT, show_alert=True)
+    if mode not in ("critical", "all", "none") or not await device_access(cb, svc, conn_id, device_id):
         return
     if mode == "none":
         await svc.db.save_subscription(chat_id, device_id, conn_id, enabled=False, mode="custom")
@@ -204,8 +230,6 @@ async def events_mode(cb: CallbackQuery, svc: Services) -> None:
         await svc.db.save_subscription(chat_id, device_id, conn_id, enabled=True, mode=mode)
     await render_events(cb, svc, conn_id, device_id)
 
-
-# --- параметры ---
 
 @router.callback_query(F.data.startswith("prm:"))
 async def parameters(cb: CallbackQuery, svc: Services) -> None:

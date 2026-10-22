@@ -1,4 +1,3 @@
-"""Запись управляемых параметров прибора: выбор параметра → значение → подтверждение → статус."""
 import asyncio
 import logging
 import re
@@ -20,7 +19,7 @@ log = logging.getLogger(__name__)
 router = Router(name="control")
 
 SMS_CODES = {"wrong_sms_tag", "expired_sms_code", "wrong_sms_code"}
-NUMBER_RE = re.compile(r"^-?\d{1,12}([.,]\d{1,6})?$")  # короткое — чтобы влезло в кнопку «Повторить»
+NUMBER_RE = re.compile(r"^-?\d{1,12}([.,]\d{1,6})?$")  # short enough to fit into the retry button callback data
 STATUS_POLL_TIMEOUT = 90
 
 
@@ -34,10 +33,9 @@ def manageable(device: dict) -> list[dict]:
 
 
 def value_options(p: dict) -> list[tuple[str, str]]:
-    """[(значение, подпись)] для кнопок."""
     if p.get("value_descriptions"):
         return [(str(v["value"]), v.get("description") or str(v["value"])) for v in p["value_descriptions"]]
-    if p.get("format") == 2:  # целочисленный параметр без описаний — чаще всего флаг 0/1
+    if p.get("format") == 2:  # an integer without value descriptions is usually a 0/1 flag
         return [("0", "0"), ("1", "1")]
     return []
 
@@ -70,7 +68,7 @@ async def control_menu(cb: CallbackQuery, state: FSMContext, svc: Services) -> N
 
 
 async def load_param(cb: CallbackQuery, svc: Services, conn_id: int, device_id: int, param_id: int):
-    """(прибор, управляемый параметр) с актуальным значением или None (ошибка уже показана)."""
+    """Return (device, manageable parameter), or None after the error was shown."""
     conn, token = await connection_token(svc, cb.message.chat.id, conn_id)
     if not token:
         await cb.answer(NO_ACCOUNT, show_alert=True)
@@ -200,7 +198,6 @@ def write_title(name: str, label: str) -> str:
 
 
 def status_outcome(statuses: list[dict] | None) -> tuple[str, str]:
-    """('ok' | 'failed' | 'pending' | 'unknown', текст) по ответу write-status."""
     if not statuses:
         return "unknown", "Статус команды не получен — проверьте позже."
     if any(s.get("in_progress") for s in statuses):
@@ -214,8 +211,9 @@ OUTCOME_ICONS = {"ok": "✅", "failed": "❌", "pending": "⏳", "unknown": "❔
 
 def result_keyboard(outcome: str, conn_id: int, device_id: int, param_id: int, value: str,
                     group_id: int | None = None):
-    """«Повторить» — только при явной неудаче; при неизвестном статусе — «Проверить статус»,
-    чтобы не отправить команду на оборудование дважды."""
+    """Retry only after an explicit failure; with unknown status offer a status check,
+    so the command is never sent to the equipment twice.
+    """
     kb = InlineKeyboardBuilder()
     first_row = 0
     if outcome == "failed":
@@ -236,7 +234,7 @@ def result_keyboard(outcome: str, conn_id: int, device_id: int, param_id: int, v
 
 @router.callback_query(F.data.startswith("cs:"))
 async def check_status(cb: CallbackQuery, svc: Services) -> None:
-    """Только запрос статуса уже отправленной команды — ничего не записывает."""
+    """Read-only status check of an already sent command; never writes."""
     _, conn_id, device_id, param_id, group_id, value = cb.data.split(":", 5)
     conn_id, device_id, param_id, group_id = int(conn_id), int(device_id), int(param_id), int(group_id)
     loaded = await load_param(cb, svc, conn_id, device_id, param_id)
@@ -258,7 +256,6 @@ async def check_status(cb: CallbackQuery, svc: Services) -> None:
 
 @router.callback_query(F.data.startswith("cr:"))
 async def retry_write(cb: CallbackQuery, state: FSMContext, svc: Services) -> None:
-    """Повтор команды: снова экран подтверждения с тем же значением."""
     _, conn_id, device_id, param_id, value = cb.data.split(":", 4)
     loaded = await load_param(cb, svc, int(conn_id), int(device_id), int(param_id))
     if loaded is None:
@@ -275,7 +272,6 @@ async def retry_write(cb: CallbackQuery, state: FSMContext, svc: Services) -> No
 
 async def track_write(bot: Bot, svc: Services, token: str, group_id: int, write_ids: list[int],
                       chat_id: int, message_id: int, title: str, target: tuple[int, int, int, str]) -> None:
-    """Следит за статусом команды и обновляет сообщение."""
     statuses: list[dict] = []
     elapsed = 0
     while elapsed < STATUS_POLL_TIMEOUT:

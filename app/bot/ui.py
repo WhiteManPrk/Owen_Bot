@@ -1,4 +1,3 @@
-"""Общие помощники обработчиков."""
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
 
@@ -11,7 +10,7 @@ def chat_of(event: Message | CallbackQuery) -> int:
 
 
 async def show(event: Message | CallbackQuery, text: str, markup: InlineKeyboardMarkup | None = None) -> None:
-    """Для кнопки — редактирует сообщение с меню, для команды — отправляет новое."""
+    """Edit the menu message for a button press, send a new one for a command."""
     if isinstance(event, CallbackQuery):
         try:
             await event.message.edit_text(text, reply_markup=markup)
@@ -30,7 +29,6 @@ def ints(data: str) -> list[int]:
 
 
 async def connection_token(svc: Services, chat_id: int, conn_id: int):
-    """(connection, token) аккаунта этого чата или (None, None)."""
     conn = await svc.db.connection(conn_id, chat_id)
     if conn is None:
         return None, None

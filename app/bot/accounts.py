@@ -1,4 +1,3 @@
-"""/start, справка и управление ключами OwenCloud."""
 from html import escape
 
 from aiogram import F, Router
@@ -20,10 +19,10 @@ HELP = (
     "1. Добавьте API-ключ OwenCloud: /accounts (OwenCloud → профиль пользователя → API-ключ).\n"
     "2. Откройте прибор в /devices, включите уведомления и выберите события.\n"
     "3. Бот пришлёт сообщение о начале и окончании каждого выбранного события.\n\n"
-    "В карточке прибора: «📊 Параметры» — текущие значения, «🎛 Управление» — запись параметров.\n\n"
+    "В карточке прибора: «📊 Параметры» — текущие значения, «🎛 Управление» — запись параметров, "
+    "«☑️ Прочитать аварии» — отметить все непрочитанные аварии прибора.\n\n"
     "Команды — в кнопке «Меню» слева от поля ввода:\n"
     "/devices — приборы\n"
-    "/readall — отметить прочитанными все события по приборам с уведомлениями\n"
     "/accounts — аккаунты OwenCloud\n"
     "/cancel — отменить ввод"
 )
@@ -82,7 +81,7 @@ async def add_account(cb: CallbackQuery, state: FSMContext) -> None:
 
 
 async def track(state: FSMContext, *messages: Message) -> None:
-    """Запоминает сообщения диалога настройки, чтобы удалить их по завершении."""
+    """Remember setup dialog messages to delete them when the dialog ends."""
     ids = (await state.get_data()).get("cleanup", [])
     await state.update_data(cleanup=ids + [m.message_id for m in messages])
 
@@ -92,7 +91,7 @@ async def cleanup(message: Message, state: FSMContext) -> None:
         try:
             await message.bot.delete_message(message.chat.id, message_id)
         except Exception:
-            pass  # уже удалено или нет прав (в группе бот без прав администратора)
+            pass  # already deleted, or no admin rights in a group
 
 
 async def ask_token(message: Message, state: FSMContext) -> None:
@@ -122,7 +121,7 @@ async def got_token(message: Message, state: FSMContext, svc: Services) -> None:
         return
     except OwenError as e:
         await track(state, await message.answer(
-            f"⚠️ Не удалось проверить ключ: {e}\nПопробуйте ещё раз или /cancel."))
+            f"⚠️ Не удалось проверить ключ: {escape(str(e))}\nПопробуйте ещё раз или /cancel."))
         return
     await state.update_data(token=token, devices=len(devices))
     await state.set_state(AddAccount.name)

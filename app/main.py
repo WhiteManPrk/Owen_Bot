@@ -11,7 +11,7 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import BotCommand, MenuButtonCommands
 
 from .bot import build_router
-from .bot.access import AccessMiddleware, code_hash
+from .bot.access import AccessMiddleware, code_hash, legacy_code_hash
 from .bot.logging_mw import UpdateLogMiddleware
 from .config import Config, is_volume
 from .crypto import TokenCrypto
@@ -27,7 +27,6 @@ from .telegram import create_session
 
 COMMANDS = [
     BotCommand(command="devices", description="Приборы"),
-    BotCommand(command="readall", description="Отметить все события прочитанными"),
     BotCommand(command="accounts", description="Аккаунты OwenCloud"),
     BotCommand(command="help", description="Справка"),
     BotCommand(command="cancel", description="Отменить ввод"),
@@ -35,7 +34,7 @@ COMMANDS = [
 
 
 async def setup_menu(bot: Bot) -> None:
-    """Меню команд. Сбой сети (например, прокси) не должен ронять запуск — меню уже могло быть задано раньше."""
+    """A network error must not stop startup: the menu may already be set."""
     try:
         await bot.set_my_commands(COMMANDS)
         await bot.set_chat_menu_button(menu_button=MenuButtonCommands())
@@ -52,6 +51,8 @@ async def main() -> None:
                                  dsn=cfg.database_url if cfg.db_backend == "postgres" else None)
     db = Database(backend)
     await db.open()
+    if cfg.access_code:
+        await db.rehash_access(legacy_code_hash(cfg.access_code), code_hash(cfg.access_code, cfg.encryption_key))
     if cfg.db_backend == "sqlite":
         if not is_volume(os.path.dirname(cfg.sqlite_path)):
             logging.warning("ВНИМАНИЕ: база SQLite %s лежит внутри контейнера и пропадёт при его пересоздании. "
@@ -66,15 +67,15 @@ async def main() -> None:
     updates_log = UpdateLogMiddleware()
     dp.message.outer_middleware(updates_log)
     dp.callback_query.outer_middleware(updates_log)
-    access = AccessMiddleware(cfg.access_code)
+    access = AccessMiddleware(cfg.access_code, cfg.encryption_key)
     dp.message.outer_middleware(access)
     dp.callback_query.outer_middleware(access)
     dp.include_router(build_router())
-    logging.info("Owen Bot %s", os.environ.get("APP_VERSION", "dev"))
+    logging.info("OwenCloud Bot %s", os.environ.get("APP_VERSION", "dev"))
     logging.info("Доступ к боту: %s", "по коду (ACCESS_CODE)" if cfg.access_code else "открыт для всех")
 
     notifier = Notifier(bot, db, ttl_hours=cfg.outbox_ttl_hours)
-    poller = Poller(svc, notifier, cfg.poll_interval, access_hash=code_hash(cfg.access_code))
+    poller = Poller(svc, notifier, cfg.poll_interval, access_hash=access.hash)
     tasks = [asyncio.create_task(poller.run()), asyncio.create_task(notifier.run())]
     if cfg.backup_every_hours > 0:
         tasks.append(asyncio.create_task(backup_loop(cfg.backup_dir, cfg.backup_every_hours, cfg.backup_keep)))

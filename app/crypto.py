@@ -1,4 +1,4 @@
-"""Шифрование ключей OwenCloud в БД (Fernet: AES-128-CBC + HMAC-SHA256)."""
+"""Fernet encryption of OwenCloud API keys stored in the DB."""
 import hashlib
 
 from cryptography.fernet import Fernet, InvalidToken
@@ -18,7 +18,7 @@ class TokenCrypto:
         return self._fernet.encrypt(token.encode()).decode()
 
     def decrypt(self, token_enc: str) -> str | None:
-        """None — если зашифровано другим ключом (ENCRYPTION_KEY сменили)."""
+        """None if the value was encrypted with another ENCRYPTION_KEY."""
         try:
             return self._fernet.decrypt(token_enc.encode()).decode()
         except InvalidToken:
@@ -26,5 +26,5 @@ class TokenCrypto:
 
     @staticmethod
     def fingerprint(token: str) -> str:
-        """Хэш для поиска дублей без расшифровки."""
+        """Hash for duplicate lookup without decryption."""
         return hashlib.sha256(token.encode()).hexdigest()

@@ -9,7 +9,7 @@ CACHE_TTL = 600
 
 
 class Services:
-    """Общие зависимости бота и поллера + кэш справочников OwenCloud."""
+    """Shared bot/poller dependencies plus a cache of OwenCloud reference data."""
 
     def __init__(self, db: Database, owen: OwenClient, crypto: TokenCrypto):
         self.db = db
@@ -29,9 +29,8 @@ class Services:
         return value
 
     async def device_info(self, token: str, device_id: int, fresh: bool = False) -> dict:
-        """Прибор с параметрами (device/:id). fresh=True — актуальные значения."""
+        """fresh=True bypasses the cache to get current values."""
         return await self._cached(("device", device_id), lambda: self.owen.device(token, device_id), fresh)
 
     async def criteria(self, token: str, device_id: int, fresh: bool = False) -> list[dict]:
-        """Настроенные события прибора."""
         return await self._cached(("criteria", device_id), lambda: self.owen.criteria(token, device_id), fresh)

@@ -1,7 +1,7 @@
 FROM python:3.12-slim
 
 ARG VERSION=dev
-LABEL org.opencontainers.image.title="Owen Bot" \
+LABEL org.opencontainers.image.title="OwenCloud Bot" \
       org.opencontainers.image.description="Telegram-бот уведомлений OwenCloud" \
       org.opencontainers.image.source="https://github.com/WhiteManPrk/Owen_Bot" \
       org.opencontainers.image.version="${VERSION}"

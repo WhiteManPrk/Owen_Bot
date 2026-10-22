@@ -1,4 +1,5 @@
 import os
+from types import SimpleNamespace
 
 import pytest
 from cryptography.fernet import Fernet
@@ -6,7 +7,7 @@ from cryptography.fernet import Fernet
 from app.crypto import TokenCrypto
 from app.db import Database
 from app.notifier import Notifier
-from app.owen import OwenAuthError
+from app.owen import OwenAuthError, OwenForbiddenError
 from app.services import Services
 from app.storage.backends import PostgresBackend, SqliteBackend
 
@@ -14,7 +15,7 @@ DEVICE = 167962
 
 
 class FakeOwen:
-    """Заглушка OwenCloud: журнал событий в памяти. Никаких сетевых запросов."""
+    """OwenCloud stub: in-memory journal, no network."""
 
     def __init__(self):
         self.log: dict[int, dict] = {}
@@ -37,6 +38,8 @@ class FakeOwen:
     def _check(self, token):
         if token == "bad":
             raise OwenAuthError("bad")
+        if token == "denied":
+            raise OwenForbiddenError("no access to the device")
 
     async def log_forward(self, token, device_id, start_ts, limit):
         self._check(token)
@@ -67,16 +70,25 @@ class FakeOwen:
 
 
 class FakeBot:
-    """Заглушка Telegram: запоминает отправленное; fail — очередь исключений для следующих отправок."""
+    """Telegram stub: records sent/edited messages; fail queues exceptions for the next calls."""
 
     def __init__(self):
         self.sent: list[tuple[int, str, object]] = []
+        self.replies: list[int | None] = []
+        self.edited: list[tuple[int, int, str, object]] = []
         self.fail: list[Exception] = []
 
-    async def send_message(self, chat_id, text, reply_markup=None):
+    async def send_message(self, chat_id, text, reply_markup=None, reply_parameters=None):
         if self.fail:
             raise self.fail.pop(0)
         self.sent.append((chat_id, text, reply_markup))
+        self.replies.append(reply_parameters.message_id if reply_parameters else None)
+        return SimpleNamespace(message_id=1000 + len(self.sent))
+
+    async def edit_message_text(self, text, chat_id, message_id, reply_markup=None):
+        if self.fail:
+            raise self.fail.pop(0)
+        self.edited.append((chat_id, message_id, text, reply_markup))
 
 
 async def fresh_postgres() -> PostgresBackend:
@@ -109,7 +121,7 @@ async def sqlite_backend(tmp_path):
 
 @pytest.fixture(params=["sqlite", "postgres"])
 async def db(request, tmp_path):
-    """Каждый тест с этой фикстурой выполняется на обеих базах."""
+    """Runs every test that uses it on both databases."""
     backend = await (fresh_sqlite(tmp_path / "owenbot.db") if request.param == "sqlite" else fresh_postgres())
     database = Database(backend)
     await database.open()

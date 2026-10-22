@@ -38,7 +38,7 @@ def fmt_duration(seconds: int) -> str:
 
 
 def fmt_interval(start, end, tz: timezone) -> str:
-    """'14:32 → 15:14 (42 мин)'; дата добавляется, если событие не сегодняшнее или переходит через сутки."""
+    """'HH:MM → HH:MM (duration)'; the date is added unless the event is today and within one day."""
     s, e = _dt(start, tz), _dt(end, tz)
     today = datetime.now(tz).date()
     if s.date() == e.date() == today:
@@ -64,10 +64,10 @@ def _unit(p: dict) -> str:
 
 
 def _useful_values(rec: dict, params: dict[int, dict]) -> list[str]:
-    """Значения параметров, которые добавляют информацию к названию события.
+    """Parameter values that add information to the event name.
 
-    Параметры-состояния (с описаниями значений: «Норма/Авария», «Ожидание/Поджиг») уже
-    отражены в названии события — их не показываем. Показываем измерения (температура и т.п.).
+    State parameters (with value descriptions) are already reflected in the event name;
+    only measurements such as temperature are shown.
     """
     message = (rec.get("message") or "").lower()
     lines = []
@@ -84,9 +84,9 @@ def _useful_values(rec: dict, params: dict[int, dict]) -> list[str]:
 
 
 def event_message(rec: dict, phase: str, device: dict | None, company: str | None) -> str:
-    """Уведомление о начале (phase='start') или окончании ('end') события из журнала.
+    """Notification about the start ('start') or end ('end') of a journal record.
 
-    company — показывается, только если передано (в чате несколько аккаунтов).
+    company is shown only when passed (several accounts in the chat).
     """
     critical = bool(rec.get("is_critical"))
     tz = parse_tz((device or {}).get("time_zone"))

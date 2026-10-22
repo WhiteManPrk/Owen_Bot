@@ -1,8 +1,7 @@
-"""Клавиатуры, общие для бота и поллера."""
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardRemove
 
-# Постоянной клавиатуры внизу нет (мешает жесту «назад» на Android) — команды в меню бота.
-# NO_KEYBOARD убирает клавиатуру, оставшуюся от прежних версий.
+# No persistent reply keyboard: it breaks the Android back gesture.
+# NO_KEYBOARD removes a keyboard left by older versions.
 NO_KEYBOARD = ReplyKeyboardRemove()
 
 

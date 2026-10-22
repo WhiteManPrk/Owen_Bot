@@ -1,4 +1,4 @@
-"""Клиент OwenCloud API (https://api.owencloud.ru/)."""
+"""OwenCloud API client (https://api.owencloud.ru/)."""
 import asyncio
 import logging
 import time
@@ -14,11 +14,11 @@ class OwenError(Exception):
 
 
 class OwenAuthError(OwenError):
-    """Ключ недействителен или отозван."""
+    """The key is invalid or revoked."""
 
 
 class OwenForbiddenError(OwenError):
-    """Ключ рабочий, но у пользователя OwenCloud нет прав на действие (HTTP 403)."""
+    """The key works, but the OwenCloud user lacks rights (HTTP 403)."""
 
 
 class OwenWriteError(OwenError):
@@ -101,13 +101,17 @@ class OwenClient:
     async def mark_read(self, token: str, log_id: int) -> None:
         await self.call(token, f"event-log/read/{log_id}")
 
-    async def unread_records(self, token: str) -> list[dict]:
-        """Непрочитанные записи журнала событий приборов по всей компании."""
+    async def unread_alarms(self, token: str) -> list[dict]:
+        # The OwenCloud UI treats only critical events as unread; info events are never read there.
         return await self.call(token, "company/event-registration",
-                               {"event_type": 0, "is_read": 0, "is_critical": -1, "is_end": -1})
+                               {"event_type": 0, "is_read": 0, "is_critical": 1, "is_end": -1})
+
+    async def mark_events_read(self, token: str, event_ids: list[int]) -> list[dict]:
+        """Marks every log record of the given event criteria as read; returns the records marked now."""
+        return await self.call(token, "event/mark-as-read", {"event_ids": event_ids, "is_end": -1})
 
     async def write(self, token: str, param_id: int, value: str, timeout: int = 60) -> tuple[int, list[int]]:
-        """Команда записи -> (writeGroupId, [writeParamId])."""
+        """Returns (writeGroupId, [writeParamId])."""
         data = await self.call(token, "parameters/write-data", {
             "sms_tag": "", "sms_code": "", "timeout": timeout, "sync": False,
             "data": [{"id": param_id, "value": value}],
@@ -119,6 +123,6 @@ class OwenClient:
         raise OwenWriteError(str(data))
 
     async def write_status(self, token: str, group_id: int, param_ids: list[int] | None = None) -> list[dict]:
-        # API требует оба поля, хотя документация называет их взаимозаменяемыми; пустой список допустим
+        # the API requires both fields despite the docs; an empty list is accepted
         return await self.call(token, "parameters/write-status",
                                {"writeGroupIds": [group_id], "writeParamIds": param_ids or []})

@@ -8,7 +8,7 @@ from app.owen import OwenAuthError, OwenClient, OwenForbiddenError, OwenWriteErr
 
 
 def client_with(status: int, body) -> OwenClient:
-    """OwenClient на подменённом транспорте — без сетевых запросов."""
+    """OwenClient on a mock transport, no network."""
     client = OwenClient("https://example.invalid/v1")
     transport = httpx.MockTransport(lambda request: httpx.Response(status, json=body))
     client._http = httpx.AsyncClient(base_url="https://example.invalid/v1/", transport=transport)
@@ -48,7 +48,7 @@ async def test_write_status_sends_both_fields():
     client._http = httpx.AsyncClient(base_url="https://example.invalid/v1/", transport=httpx.MockTransport(handler))
     await client.write_status("t", 75)
     await client.write_status("t", 75, [701])
-    # реальный API отвечает 400, если нет writeParamIds
+    # the real API answers 400 without writeParamIds
     assert sent == [{"writeGroupIds": [75], "writeParamIds": []}, {"writeGroupIds": [75], "writeParamIds": [701]}]
 
 
@@ -65,7 +65,7 @@ def buttons(markup):
 
 def test_result_keyboard():
     assert buttons(result_keyboard("failed", 12, 167962, 5550397, "1"))[0] == "cr:12:167962:5550397:1"
-    # статус неизвестен — повтора нет (команда могла выполниться), только проверка статуса
+    # unknown status: no retry (the command may have run), only a status check
     unknown = buttons(result_keyboard("unknown", 12, 167962, 5550397, "1", group_id=973773941))
     assert unknown[0] == "cs:12:167962:5550397:973773941:1"
     assert not any(b.startswith("cr:") for b in unknown)
@@ -110,7 +110,7 @@ async def test_telegram_retry(monkeypatch):
     assert await mw(flaky, None, GetMe()) == "ok" and len(calls) == 3
 
     calls.clear()
-    with pytest.raises(TelegramNetworkError):  # getUpdates не повторяем
+    with pytest.raises(TelegramNetworkError):  # getUpdates is not retried
         await mw(flaky, None, GetUpdates())
     assert len(calls) == 1
 
@@ -130,15 +130,15 @@ async def test_stale_callback_ignored():
 
     mw = IgnoreStaleCallback()
     assert await mw(stale, None, AnswerCallbackQuery(callback_query_id="1")) is True
-    with pytest.raises(TelegramBadRequest):  # другие запросы — ошибка как есть
+    with pytest.raises(TelegramBadRequest):  # other requests: the error as is
         await mw(stale, None, SendMessage(chat_id=1, text="x"))
 
 
 @pytest.mark.parametrize("env, expected", [
-    ({}, "sqlite"),                                              # новая установка
-    ({"POSTGRES_PASSWORD": "p"}, "postgres"),                    # старый compose 1.0.x без DB_BACKEND
+    ({}, "sqlite"),  # new install
+    ({"POSTGRES_PASSWORD": "p"}, "postgres"),  # 1.0.x compose without DB_BACKEND
     ({"DATABASE_URL": "postgresql://u:p@h/db"}, "postgres"),
-    ({"POSTGRES_PASSWORD": "p", "DB_BACKEND": "sqlite"}, "sqlite"),  # явный выбор важнее
+    ({"POSTGRES_PASSWORD": "p", "DB_BACKEND": "sqlite"}, "sqlite"),  # explicit choice wins
     ({"DB_BACKEND": "POSTGRES", "POSTGRES_PASSWORD": "p"}, "postgres"),
 ])
 def test_db_backend_choice(monkeypatch, env, expected):
@@ -159,5 +159,30 @@ def test_db_backend_invalid(monkeypatch):
 
 def test_is_volume(tmp_path):
     from app.config import is_volume
-    assert is_volume("/proc")           # отдельная файловая система
-    assert not is_volume("/usr/lib")    # слой образа
+    assert is_volume("/proc")  # separate filesystem
+    assert not is_volume("/usr/lib")  # image layer
+
+
+def test_access_code_hash_is_keyed():
+    from app.bot.access import code_hash, legacy_code_hash
+    assert code_hash("2312", "key-a") != code_hash("2312", "key-b")
+    assert code_hash("2312", "key-a") != legacy_code_hash("2312")
+    assert code_hash(None, "key-a") is None
+
+
+async def test_rehash_access(db):
+    from app.bot.access import code_hash, legacy_code_hash
+    await db.grant_access(1, legacy_code_hash("2312"))
+    await db.rehash_access(legacy_code_hash("2312"), code_hash("2312", "k"))
+    assert await db.has_access(1, code_hash("2312", "k"))
+    assert not await db.has_access(1, legacy_code_hash("2312"))
+
+
+async def test_sqlite_file_is_private(tmp_path):
+    import os
+    import stat
+
+    from app.storage.backends import SqliteBackend
+    backend = await SqliteBackend(str(tmp_path / "x.db")).open()
+    assert stat.S_IMODE(os.stat(tmp_path / "x.db").st_mode) == 0o600
+    await backend.close()

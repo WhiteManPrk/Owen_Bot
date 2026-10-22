@@ -1,7 +1,7 @@
-"""Адаптеры баз данных: единый интерфейс для SQLite и PostgreSQL.
+"""Database adapters with one interface for SQLite and PostgreSQL.
 
-Запросы пишутся с плейсхолдерами `?`; адаптер PostgreSQL переводит их в `$1, $2, …`.
-Строки результата — обычные dict.
+Queries use '?' placeholders; the PostgreSQL adapter turns them into $1, $2, ...
+Result rows are plain dicts.
 """
 import asyncio
 import contextlib
@@ -58,8 +58,9 @@ class _SqliteExec:
 
 
 class SqliteBackend:
-    """Одно соединение aiosqlite в режиме autocommit; операции сериализуются блокировкой,
-    транзакция держит блокировку целиком — чужие запросы не вклиниваются."""
+    """One autocommit aiosqlite connection. A lock serializes operations and a transaction
+    holds it for its whole duration, so other queries cannot interleave.
+    """
     dialect = "sqlite"
 
     def __init__(self, path: str):
@@ -72,6 +73,7 @@ class SqliteBackend:
         if os.path.dirname(self.path):
             os.makedirs(os.path.dirname(self.path), exist_ok=True)
         self._con = await aiosqlite.connect(self.path, isolation_level=None)
+        os.chmod(self.path, 0o600)  # holds encrypted keys and chat data; -wal/-shm inherit these permissions
         await self._con.execute("PRAGMA journal_mode = WAL")
         await self._con.execute("PRAGMA foreign_keys = ON")
         await self._con.execute("PRAGMA busy_timeout = 5000")
@@ -108,7 +110,7 @@ class SqliteBackend:
             await self._con.execute("COMMIT")
 
     async def backup_to(self, target_path: str) -> None:
-        """Штатное онлайн-копирование SQLite — согласованная копия без остановки бота."""
+        """SQLite online backup: a consistent copy while the bot keeps running."""
         import sqlite3
 
         def copy() -> None:
@@ -140,7 +142,7 @@ class _PgExec:
     dialect = "postgres"
 
     def __init__(self, target):
-        self._t = target  # пул или соединение asyncpg
+        self._t = target  # asyncpg pool or connection
 
     async def fetch(self, sql, *args):
         return [dict(r) for r in await self._t.fetch(to_pg(sql), *args)]

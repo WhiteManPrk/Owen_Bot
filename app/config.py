@@ -27,10 +27,7 @@ def check_scheme(name: str, url: str | None, allowed: tuple[str, ...]) -> str | 
 
 
 def proxy_url(url: str | None, login: str | None, password: str | None) -> str | None:
-    """Адрес прокси с логином и паролем: ('socks5://host:1080', 'user', 'p@ss') -> 'socks5://user:p%40ss@host:1080'.
-
-    Логин и пароль можно задать и прямо в адресе — тогда отдельные переменные не нужны.
-    """
+    """('socks5://host:1080', 'user', 'p@ss') -> 'socks5://user:p%40ss@host:1080'."""
     if not url or not login:
         return url
     scheme, _, rest = url.rpartition("://")
@@ -46,7 +43,6 @@ def postgres_configured() -> bool:
 
 
 def postgres_dsn() -> str:
-    """Подключение к PostgreSQL из DATABASE_URL или POSTGRES_* (нужно только при работе с PostgreSQL)."""
     return _env("DATABASE_URL") or "postgresql://{u}:{p}@{h}:{port}/{db}".format(
         u=quote(_env("POSTGRES_USER", "owenbot"), safe=""),
         p=quote(_required("POSTGRES_PASSWORD"), safe=""),
@@ -61,8 +57,9 @@ def sqlite_path() -> str:
 
 
 def db_backend() -> str:
-    """DB_BACKEND, если задан. Иначе — postgres, когда настроен PostgreSQL (так работали версии 1.0.x
-    со старым docker-compose.yml), и sqlite во всех остальных случаях."""
+    """Explicit DB_BACKEND wins; otherwise postgres when PostgreSQL is configured
+    (the 1.0.x compose file), else sqlite.
+    """
     backend = (_env("DB_BACKEND") or ("postgres" if postgres_configured() else "sqlite")).lower()
     if backend not in DB_BACKENDS:
         raise SystemExit(f"DB_BACKEND: «{backend}» — допустимо sqlite или postgres")
@@ -70,7 +67,7 @@ def db_backend() -> str:
 
 
 def is_volume(path: str) -> bool:
-    """Лежит ли каталог на смонтированном томе (а не в слое контейнера, который пропадает при пересоздании)."""
+    """True if the directory is on a mounted volume rather than in the container layer."""
     directory = os.path.abspath(path)
     try:
         with open("/proc/self/mountinfo", encoding="utf-8") as f:
@@ -110,7 +107,7 @@ class Config:
     def from_env(cls) -> "Config":
         backend = db_backend()
         if backend == "postgres":
-            postgres_dsn()  # проверить POSTGRES_PASSWORD сразу при запуске
+            postgres_dsn()  # fail fast if POSTGRES_PASSWORD is missing
         return cls(
             bot_token=_required("BOT_TOKEN"),
             tg_proxy=check_scheme("TG_PROXY", proxy_url(

@@ -1,8 +1,7 @@
-"""Схема БД и её миграции для SQLite и PostgreSQL.
+"""DB schema and migrations for SQLite and PostgreSQL.
 
-Каждая миграция — пронумерованный шаг с вариантами DDL для обеих баз. При старте применяются
-шаги, которых ещё нет в `schema_version`. Новую миграцию добавляют в конец MIGRATIONS
-и описание таблиц в TABLES (для переноса и резервных копий).
+Each migration is a numbered step with DDL for both databases; missing steps run at startup.
+Add new migrations to the end of MIGRATIONS and new tables/columns to TABLES.
 """
 import logging
 from datetime import datetime, timezone
@@ -12,7 +11,7 @@ from .backends import Backend, Executor
 log = logging.getLogger(__name__)
 
 MIGRATIONS: dict[int, dict[str, list[str]]] = {
-    # v1 — исходная схема (совпадает со схемой PostgreSQL версий 1.0.x)
+    # v1: initial schema (same as PostgreSQL in 1.0.x)
     1: {
         "postgres": [
             """CREATE TABLE IF NOT EXISTS connections (
@@ -63,7 +62,7 @@ MIGRATIONS: dict[int, dict[str, list[str]]] = {
                 granted_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)""",
         ],
     },
-    # v2 — очередь неотправленных уведомлений
+    # v2: notification outbox
     2: {
         "postgres": [
             """CREATE TABLE IF NOT EXISTS outbox (
@@ -80,11 +79,38 @@ MIGRATIONS: dict[int, dict[str, list[str]]] = {
             "CREATE INDEX IF NOT EXISTS outbox_chat ON outbox (chat_id, id)",
         ],
     },
+    # v3: message <-> journal record link (one read button per event)
+    3: {
+        "postgres": [
+            "ALTER TABLE outbox ADD COLUMN IF NOT EXISTS log_id BIGINT",
+            "ALTER TABLE outbox ADD COLUMN IF NOT EXISTS device_id BIGINT",
+            "ALTER TABLE outbox ADD COLUMN IF NOT EXISTS connection_id INTEGER",
+            "ALTER TABLE outbox ADD COLUMN IF NOT EXISTS reply INTEGER NOT NULL DEFAULT 0",
+            """CREATE TABLE IF NOT EXISTS event_messages (
+                chat_id BIGINT NOT NULL, log_id BIGINT NOT NULL, message_id BIGINT NOT NULL,
+                device_id BIGINT NOT NULL, connection_id INTEGER NOT NULL, text TEXT NOT NULL,
+                has_button INTEGER NOT NULL DEFAULT 0, created_at BIGINT NOT NULL,
+                PRIMARY KEY (chat_id, log_id))""",
+            "CREATE INDEX IF NOT EXISTS event_messages_buttons ON event_messages (device_id) WHERE has_button = 1",
+        ],
+        "sqlite": [
+            "ALTER TABLE outbox ADD COLUMN log_id INTEGER",
+            "ALTER TABLE outbox ADD COLUMN device_id INTEGER",
+            "ALTER TABLE outbox ADD COLUMN connection_id INTEGER",
+            "ALTER TABLE outbox ADD COLUMN reply INTEGER NOT NULL DEFAULT 0",
+            """CREATE TABLE IF NOT EXISTS event_messages (
+                chat_id INTEGER NOT NULL, log_id INTEGER NOT NULL, message_id INTEGER NOT NULL,
+                device_id INTEGER NOT NULL, connection_id INTEGER NOT NULL, text TEXT NOT NULL,
+                has_button INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL,
+                PRIMARY KEY (chat_id, log_id))""",
+            "CREATE INDEX IF NOT EXISTS event_messages_buttons ON event_messages (device_id) WHERE has_button = 1",
+        ],
+    },
 }
 
 LATEST = max(MIGRATIONS)
 
-# Таблицы в порядке зависимостей (родители раньше детей) — для переноса и резервных копий.
+# Tables in dependency order (parents first), for copy and backup.
 TABLES: list[tuple[str, list[str]]] = [
     ("connections", ["id", "chat_id", "token_enc", "token_hash", "name", "broken", "created_at"]),
     ("subscriptions", ["chat_id", "device_id", "connection_id", "enabled", "mode"]),
@@ -92,7 +118,10 @@ TABLES: list[tuple[str, list[str]]] = [
     ("chat_access", ["chat_id", "code_hash", "granted_at"]),
     ("poll_state", ["device_id", "cursor", "polled_at"]),
     ("log_records", ["log_id", "device_id", "start_dt", "ended"]),
-    ("outbox", ["id", "chat_id", "text", "markup", "created_at", "attempts", "next_try_at", "last_error"]),
+    ("outbox", ["id", "chat_id", "text", "markup", "created_at", "attempts", "next_try_at", "last_error",
+                "log_id", "device_id", "connection_id", "reply"]),
+    ("event_messages", ["chat_id", "log_id", "message_id", "device_id", "connection_id", "text",
+                        "has_button", "created_at"]),
 ]
 BOOL_COLUMNS = {"broken", "enabled", "ended"}
 TIMESTAMP_COLUMNS = {("connections", "created_at"), ("chat_access", "granted_at")}
@@ -100,7 +129,7 @@ SERIAL_COLUMNS = {"connections": "id", "outbox": "id"}
 
 
 def convert(table: str, column: str, value, target: str):
-    """Приведение значения к типу целевой базы (булевы и метки времени хранятся по-разному)."""
+    """Convert a value to the target DB type (booleans and timestamps are stored differently)."""
     if value is None:
         return None
     if column in BOOL_COLUMNS:
@@ -109,7 +138,7 @@ def convert(table: str, column: str, value, target: str):
         if target == "postgres":
             if isinstance(value, datetime):
                 return value
-            dt = datetime.fromisoformat(str(value))  # SQLite: 'YYYY-MM-DD HH:MM:SS' в UTC
+            dt = datetime.fromisoformat(str(value))  # SQLite stores 'YYYY-MM-DD HH:MM:SS' in UTC
             return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
         if isinstance(value, datetime):
             return value.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
@@ -122,18 +151,26 @@ async def table_exists(db: Executor, name: str) -> bool:
     return bool(await db.fetchval("SELECT to_regclass(?) IS NOT NULL", name))
 
 
+async def table_columns(db: Executor, name: str) -> set[str]:
+    if db.dialect == "sqlite":
+        return {r["name"] for r in await db.fetch(f"PRAGMA table_info({name})")}
+    return {r["column_name"] for r in await db.fetch(
+        "SELECT column_name FROM information_schema.columns WHERE table_name = ? AND table_schema = current_schema()",
+        name)}
+
+
 async def current_version(db: Backend) -> int:
     await db.execute("CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)")
     version = await db.fetchval("SELECT max(version) FROM schema_version")
     if version is None and await table_exists(db, "connections"):
-        # база создана версией 1.0.x, до появления schema_version
+        # created by 1.0.x, before schema_version existed
         await db.execute("INSERT INTO schema_version (version) VALUES (1)")
         version = 1
     return version or 0
 
 
 async def migrate(db: Backend) -> int:
-    """Применяет недостающие миграции, возвращает итоговую версию схемы."""
+    """Apply missing migrations and return the resulting schema version."""
     version = await current_version(db)
     for number in sorted(n for n in MIGRATIONS if n > version):
         async with db.transaction() as tx:

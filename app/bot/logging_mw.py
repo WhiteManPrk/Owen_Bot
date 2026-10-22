@@ -1,6 +1,6 @@
-"""Журнал действий пользователей (уровень DEBUG).
+"""User action log (DEBUG level).
 
-Текст обычных сообщений не пишется — в нём могут быть API-ключ OwenCloud или код доступа.
+Message text is never logged: it may contain an OwenCloud API key or the access code.
 """
 import logging
 import time

@@ -61,7 +61,7 @@ def test_end_message_interval():
 def test_values_only_when_useful():
     data = [{"id": 1, "v": "0", "fv": "Ожидание"}, {"id": 2, "v": "96.40000", "fv": ""}]
     text = event_message(rec(message="Перегрев", data=data), "start", DEVICE, None)
-    assert "Режим работы" not in text  # состояние уже отражено в названии события
+    assert "Режим работы" not in text  # the state is already in the event name
     assert "Температура в водяном контуре: <b>96.4 °C</b>" in text
 
 

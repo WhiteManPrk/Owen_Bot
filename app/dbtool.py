@@ -1,12 +1,12 @@
-"""Перенос данных между базами, резервные копии и восстановление.
+"""Copy data between databases, back up and restore.
 
     python -m app.dbtool copy --from postgres --to sqlite [--force]
     python -m app.dbtool backup [--dir /data/backups]
     python -m app.dbtool restore /data/backups/owenbot-....db [--force]
     python -m app.dbtool info
 
-copy/restore делать при остановленном боте. Резервная копия — всегда файл SQLite,
-её можно восстановить в любую из баз. Ключи OwenCloud в копии зашифрованы — нужен тот же ENCRYPTION_KEY.
+Run copy/restore with the bot stopped. A backup is always an SQLite file and can be restored
+into either database. OwenCloud keys in it are encrypted: the same ENCRYPTION_KEY is required.
 """
 import argparse
 import asyncio
@@ -18,7 +18,7 @@ from datetime import datetime, timezone
 
 from .config import db_backend, postgres_configured, postgres_dsn, sqlite_path
 from .storage.backends import Backend, SqliteBackend, open_backend
-from .storage.schema import SERIAL_COLUMNS, TABLES, convert, migrate, table_exists
+from .storage.schema import SERIAL_COLUMNS, TABLES, convert, migrate, table_columns, table_exists
 
 log = logging.getLogger(__name__)
 
@@ -41,9 +41,9 @@ async def row_counts(db: Backend) -> dict[str, int]:
 
 
 async def copy_data(src: Backend, dst: Backend, force: bool = False) -> dict[str, tuple[int, int]]:
-    """Копирует все данные src → dst в одной транзакции. src не изменяется.
+    """Copy all data src -> dst in one transaction; src is not modified.
 
-    Возвращает {таблица: (строк в источнике, строк в цели)}.
+    Returns {table: (source rows, target rows)}.
     """
     await migrate(dst)
     existing = await row_counts(dst)
@@ -57,8 +57,10 @@ async def copy_data(src: Backend, dst: Backend, force: bool = False) -> dict[str
             await tx.execute(f"DELETE FROM {table}")
         for table, columns in TABLES:
             if not await table_exists(src, table):
-                source_counts[table] = 0  # в старой схеме таблицы ещё не было
+                source_counts[table] = 0  # the table did not exist in older schemas
                 continue
+            present = await table_columns(src, table)
+            columns = [c for c in columns if c in present]  # the column did not exist in older schemas
             rows = await src.fetch(f"SELECT {', '.join(columns)} FROM {table}")
             source_counts[table] = len(rows)
             if rows:
@@ -81,16 +83,16 @@ async def copy_data(src: Backend, dst: Backend, force: bool = False) -> dict[str
 
 
 async def make_backup(directory: str, keep: int = 0, backend: str | None = None) -> str:
-    """Резервная копия текущей базы в файл SQLite. keep > 0 — оставить столько последних копий."""
+    """Back up the current DB into an SQLite file; keep > 0 keeps that many latest copies."""
     backend = backend or db_backend()
-    os.makedirs(directory, exist_ok=True)
+    os.makedirs(directory, mode=0o700, exist_ok=True)
     name = f"owenbot-{datetime.now(timezone.utc):%Y%m%d-%H%M%S}.db"
     final = os.path.join(directory, name)
     part = final + ".part"
     if os.path.exists(part):
         os.remove(part)
     if backend == "sqlite":
-        await SqliteBackend(sqlite_path()).backup_to(part)  # онлайн-копирование, бот может работать
+        await SqliteBackend(sqlite_path()).backup_to(part)  # online backup, safe while the bot runs
     else:
         src = await open_kind("postgres")
         dst = await SqliteBackend(part).open()
@@ -99,6 +101,7 @@ async def make_backup(directory: str, keep: int = 0, backend: str | None = None)
         finally:
             await dst.close()
             await src.close()
+    os.chmod(part, 0o600)
     os.replace(part, final)
     if keep > 0:
         for old in sorted(glob.glob(os.path.join(directory, "owenbot-*.db")))[:-keep]:
@@ -107,7 +110,6 @@ async def make_backup(directory: str, keep: int = 0, backend: str | None = None)
 
 
 async def backup_loop(directory: str, every_hours: int, keep: int) -> None:
-    """Автоматические резервные копии (BACKUP_EVERY_HOURS > 0)."""
     log.info("Автобэкап: каждые %s ч в %s, хранить %s", every_hours, directory, keep)
     while True:
         await asyncio.sleep(every_hours * 3600)
@@ -121,7 +123,7 @@ async def backup_loop(directory: str, every_hours: int, keep: int) -> None:
 
 
 async def migration_hint(db_is_empty: bool) -> None:
-    """Выбран SQLite и он пуст, а PostgreSQL доступен и в нём есть данные — подсказать команду переноса."""
+    """Log a hint when SQLite is selected and empty but PostgreSQL has data."""
     if not db_is_empty or not postgres_configured():
         return
     try:

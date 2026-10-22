@@ -12,7 +12,7 @@ from .conftest import fresh_sqlite
 
 
 async def fill(backend):
-    """Наполнить базу данными всех таблиц."""
+    """Fill every table."""
     db = Database(backend)
     await db.open()
     conn_id = await db.add_connection(111, "enc-token", "hash1", "Компания РИМ")
@@ -50,7 +50,7 @@ async def test_copy_both_directions(direction, sqlite_backend, pg_backend):
     report = await copy_data(src, dst)
     assert report["connections"] == (2, 2) and report["sub_events"] == (2, 2) and report["outbox"] == (1, 1)
     assert await snapshot(dst) == await snapshot(src)
-    # новые записи после переноса не конфликтуют по id (счётчики продолжены)
+    # ids continue after the copy (sequences advanced)
     new_id = await Database(dst).add_connection(333, "e", "h3", "Новая")
     assert new_id == 3
 
@@ -65,7 +65,7 @@ async def test_copy_refuses_non_empty_target(sqlite_backend, pg_backend):
 
 
 async def test_copy_from_old_postgres_schema(pg_backend, sqlite_backend):
-    """База 1.0.x: схема v1 без schema_version и без очереди — распознаётся и переносится, источник не меняется."""
+    """A 1.0.x database (v1, no schema_version, no outbox) is detected and copied; the source is untouched."""
     from app.storage.schema import MIGRATIONS
     for statement in MIGRATIONS[1]["postgres"]:
         await pg_backend.execute(statement)
@@ -73,7 +73,7 @@ async def test_copy_from_old_postgres_schema(pg_backend, sqlite_backend):
     report = await copy_data(pg_backend, sqlite_backend)
     assert report["connections"] == (1, 1) and report["outbox"] == (0, 0)
     assert not await pg_backend.fetchval("SELECT to_regclass('outbox') IS NOT NULL")
-    assert await current_version(pg_backend) == 1  # распознана как v1
+    assert await current_version(pg_backend) == 1  # detected as v1
     assert await migrate(pg_backend) == LATEST
 
 
@@ -127,4 +127,4 @@ async def _same(backend):
 
 async def _tick():
     import asyncio
-    await asyncio.sleep(1.1)  # имя копии — с точностью до секунды
+    await asyncio.sleep(1.1)  # backup names have one-second resolution

@@ -12,7 +12,7 @@ CHAT = 111
 
 
 async def sent(svc) -> list[tuple[int, str, str | None]]:
-    """Что поллер поставил в очередь уведомлений."""
+    """What the poller queued."""
     return [(m["chat_id"], m["text"], m["markup"]) for m in await outbox(svc.db)]
 
 
@@ -32,7 +32,7 @@ async def subscribe(svc, chat=CHAT, token="good", mode="critical", name="Ком�
 async def test_first_poll_does_not_send_history(svc, owen, poller, notifier):
     now = int(time.time())
     owen.add(1, now - 600, now - 300)
-    owen.add(2, now - 100)  # ещё идёт
+    owen.add(2, now - 100)  # still ongoing
     await subscribe(svc)
     await poller.tick()
     assert (await sent(svc)) == []
@@ -42,7 +42,7 @@ async def test_first_poll_does_not_send_history(svc, owen, poller, notifier):
 async def test_start_and_end_sent_once(svc, owen, poller, notifier):
     now = int(time.time())
     await subscribe(svc)
-    await poller.tick()  # начальная загрузка
+    await poller.tick()  # initial load
 
     owen.add(10, now - 5, message="Не удалось поджечь")
     await poller.tick()
@@ -101,8 +101,8 @@ async def test_disabled_subscription_gets_nothing(svc, owen, poller, notifier):
 
 async def test_end_of_old_open_record_found_by_id(svc, owen, poller, notifier):
     now = int(time.time())
-    owen.add(50, now - 5 * OVERLAP)  # началось давно, выпадает из окна forward
-    owen.add(51, now - 60, now - 30)  # свежая запись двигает курсор
+    owen.add(50, now - 5 * OVERLAP)  # started long ago, outside the forward window
+    owen.add(51, now - 60, now - 30)  # a fresh record moves the cursor
     await subscribe(svc)
     await poller.tick()
     assert await svc.db.open_records(DEVICE) == [50]
@@ -119,7 +119,7 @@ async def test_reseed_after_long_pause(svc, owen, poller, notifier):
     await subscribe(svc)
     await poller.tick()
     await svc.db.set_cursor(DEVICE, now - 10 * 3600, now - RESEED_AFTER - 60)
-    owen.add(60, now - 3600)  # «пропущенное» за время паузы
+    owen.add(60, now - 3600)  # 'missed' during the pause
     await poller.tick()
     assert (await sent(svc)) == []
 
@@ -141,7 +141,7 @@ async def test_access_code_limits_recipients(svc, owen, notifier):
     await subscribe(svc, chat=2)
     await subscribe(svc, chat=3)
     await svc.db.grant_access(1, "h1")
-    await svc.db.grant_access(3, "old-code")  # код сменился
+    await svc.db.grant_access(3, "old-code")  # the access code changed
     await poller.tick()
     owen.add(80, now - 5)
     await poller.tick()
@@ -157,3 +157,57 @@ async def test_company_shown_only_with_several_accounts(svc, owen, poller, notif
     owen.add(70, now - 5)
     await poller.tick()
     assert "· Компания РИМ" in (await sent(svc))[0][1]
+
+
+async def test_button_only_for_alarms_and_end_is_reply(svc, owen, poller):
+    now = int(time.time())
+    await subscribe(svc, mode="all")
+    await poller.tick()
+    owen.add(90, now - 20, critical=0, event_id=200, message="Котельная в режиме поджига")
+    owen.add(91, now - 10, critical=1, message="Авария")
+    await poller.tick()
+    owen.log[91]["end_dt"] = now
+    await poller.tick()
+    rows = await outbox(svc.db)
+    info, alarm, alarm_end = rows
+    assert info["markup"] is None and alarm["markup"] is not None
+    assert (alarm["log_id"], alarm["reply"]) == (91, 0)
+    assert (alarm_end["log_id"], alarm_end["reply"]) == (91, 1)
+
+
+async def test_short_alarm_is_single_message_with_button(svc, owen, poller):
+    now = int(time.time())
+    await subscribe(svc)
+    await poller.tick()
+    owen.add(95, now - 30, now - 10)
+    await poller.tick()
+    (msg,) = await outbox(svc.db)
+    assert msg["reply"] == 0 and msg["markup"] is not None and "завершена" in msg["text"]
+
+
+async def test_read_in_owencloud_removes_button(svc, owen, poller, notifier, bot):
+    now = int(time.time())
+    await subscribe(svc)
+    await poller.tick()
+    owen.add(97, now - 10)
+    await poller.tick()
+    await notifier.flush()
+    assert (await svc.db.messages_with_button(DEVICE))[0]["log_id"] == 97
+
+    owen.log[97]["read_dt"] = now
+    owen.log[97]["read_by_user"] = "Лемешенко Артём"
+    await poller.tick()
+    chat, message_id, text, markup = bot.edited[0]
+    assert (chat, message_id, markup) == (CHAT, 1001, None)
+    assert text.endswith("☑️ <i>Прочитано · Лемешенко Артём</i>")
+    assert await svc.db.messages_with_button(DEVICE) == []
+
+
+async def test_subscriber_without_device_access_gets_nothing(svc, owen, poller):
+    now = int(time.time())
+    await subscribe(svc, chat=1, token="denied")  # e.g. a forged callback for someone else's device
+    await subscribe(svc, chat=2, token="good")
+    await poller.tick()
+    owen.add(99, now - 5)
+    await poller.tick()
+    assert [chat for chat, _, _ in await sent(svc)] == [2]
