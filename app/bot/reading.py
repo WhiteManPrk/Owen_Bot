@@ -25,8 +25,10 @@ async def read_one(cb: CallbackQuery, svc: Services) -> None:
     try:
         await svc.owen.mark_read(token, log_id)
     except OwenError as e:
+        log.warning("Чат %s: запись %s не отмечена прочитанной: %s", cb.message.chat.id, log_id, e)
         await cb.answer(await owen_failure(svc, conn, e), show_alert=True)
         return
+    log.info("Чат %s: запись %s отмечена прочитанной (%s)", cb.message.chat.id, log_id, cb.from_user.id)
     try:
         await cb.message.edit_text(cb.message.html_text + read_mark(cb.from_user.first_name), reply_markup=None)
     except TelegramBadRequest as e:
@@ -86,6 +88,7 @@ async def read_alarms_ok(cb: CallbackQuery, svc: Services) -> None:
     except OwenError as e:
         await cb.answer(await owen_failure(svc, conn, e), show_alert=True)
         return
+    log.info("Чат %s: аварии прибора %s отмечены прочитанными: %s", cb.message.chat.id, device_id, len(marked))
     who = marked[0].get("read_by_user") if marked else None
     notifier = Notifier(cb.bot, svc.db)
     for row in await svc.db.messages_with_button(log_ids=[m["id"] for m in marked]):

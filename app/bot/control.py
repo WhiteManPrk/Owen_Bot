@@ -25,7 +25,6 @@ STATUS_POLL_TIMEOUT = 90
 
 class Control(StatesGroup):
     value = State()
-    confirm = State()
 
 
 def manageable(device: dict) -> list[dict]:
@@ -93,12 +92,13 @@ async def pick_param(cb: CallbackQuery, state: FSMContext, svc: Services) -> Non
         return
     device, p = loaded
     options = value_options(p)
+    # Only typed values need the dialog state; buttons carry everything in their callback data.
     await state.set_state(Control.value)
-    await state.update_data(conn_id=conn_id, device_id=device_id, param_id=param_id,
-                            name=p["name"], device_name=device.get("name", ""), options=options)
+    await state.set_data(dict(conn_id=conn_id, device_id=device_id, param_id=param_id,
+                              name=p["name"], device_name=device.get("name", ""), options=options))
     kb = InlineKeyboardBuilder()
     for i, (_, label) in enumerate(options):
-        kb.button(text=label, callback_data=f"cv:{i}")
+        kb.button(text=label, callback_data=f"cv:{conn_id}:{device_id}:{param_id}:{i}")
     kb.button(text="✖ Отмена", callback_data=f"ctl:{conn_id}:{device_id}")
     kb.adjust(*([2] * (len(options) // 2 + len(options) % 2)), 1)
     hint = "Выберите значение или отправьте его сообщением." if options else "Отправьте новое значение сообщением."
@@ -107,68 +107,103 @@ async def pick_param(cb: CallbackQuery, state: FSMContext, svc: Services) -> Non
     await cb.answer()
 
 
-@router.callback_query(Control.value, F.data.startswith("cv:"))
-async def value_button(cb: CallbackQuery, state: FSMContext) -> None:
-    index = int(cb.data.split(":")[1])
-    options = (await state.get_data()).get("options") or []
-    if index >= len(options):
-        await cb.answer("Устаревшая кнопка", show_alert=True)
+@router.callback_query(F.data.startswith("cv:"))
+async def value_button(cb: CallbackQuery, state: FSMContext, svc: Services) -> None:
+    conn_id, device_id, param_id, index = ints(cb.data)
+    loaded = await load_param(cb, svc, conn_id, device_id, param_id)
+    if loaded is None:
         return
+    device, p = loaded
+    options = value_options(p)
+    if index >= len(options):
+        await cb.answer("Кнопка устарела, откройте управление заново", show_alert=True)
+        return
+    await state.clear()
     value, label = options[index]
-    await ask_confirm(cb, state, value, label)
+    await ask_confirm(cb, conn_id, device_id, p, device.get("name", ""), value, label)
     await cb.answer()
 
 
 @router.message(Control.value, F.text)
 async def value_text(message: Message, state: FSMContext) -> None:
     text = message.text.strip()
-    options = (await state.get_data()).get("options") or []
-    for value, label in options:
-        if text.lower() in (value.lower(), label.lower()):
-            await ask_confirm(message, state, value, label)
-            return
-    if not NUMBER_RE.match(text):
-        await message.answer("Нужно число (например, 1 или 25,5). Отправьте ещё раз или /cancel.")
-        return
-    await ask_confirm(message, state, text, text)
-
-
-async def ask_confirm(event: Message | CallbackQuery, state: FSMContext, value: str, label: str) -> None:
     data = await state.get_data()
-    await state.update_data(value=value, label=label)
-    await state.set_state(Control.confirm)
+    p = {"id": data["param_id"], "name": data["name"]}
+    for value, label in data.get("options") or []:
+        if text.lower() in (value.lower(), label.lower()):
+            break
+    else:
+        if not NUMBER_RE.match(text):
+            await message.answer("Нужно число (например, 1 или 25,5). Отправьте ещё раз или /cancel.")
+            return
+        value = label = text
+    await state.clear()
+    await ask_confirm(message, data["conn_id"], data["device_id"], p, data["device_name"], value, label)
+
+
+def value_allowed(p: dict, value: str) -> bool:
+    """Callback data can be forged: accept only what the dialog accepts, an option or a plain number."""
+    return any(v == value for v, _ in value_options(p)) or bool(NUMBER_RE.match(value))
+
+
+async def ask_confirm(event: Message | CallbackQuery, conn_id: int, device_id: int, p: dict, device_name: str,
+                      value: str, label: str) -> None:
+    data = f"cy:{conn_id}:{device_id}:{p['id']}:{value}"
+    if len(data.encode()) > 64:
+        await show(event, "Значение слишком длинное для подтверждения кнопкой.")
+        return
     kb = InlineKeyboardBuilder()
-    kb.button(text="✅ Записать", callback_data="cy")
-    kb.button(text="✖ Отмена", callback_data="cn")
+    kb.button(text="✅ Записать", callback_data=data)
+    kb.button(text="✖ Отмена", callback_data=f"cn:{conn_id}:{device_id}")
     shown = label if label == value else f"{label} ({value})"
-    await show(event, f"Записать в «{escape(data['name'])}» ({escape(data['device_name'])}) "
+    await show(event, f"Записать в «{escape(p['name'])}» ({escape(device_name)}) "
                       f"значение <b>{escape(shown)}</b>?", kb.as_markup())
 
 
-@router.callback_query(Control.confirm, F.data == "cn")
-@router.callback_query(Control.value, F.data == "cn")
+@router.callback_query(F.data.startswith("cn:"))
 async def cancel_write(cb: CallbackQuery, state: FSMContext) -> None:
-    data = await state.get_data()
+    conn_id, device_id = ints(cb.data)
     await state.clear()
     kb = InlineKeyboardBuilder()
-    if data.get("conn_id"):
-        kb.button(text="⬅️ К управлению", callback_data=f"ctl:{data['conn_id']}:{data['device_id']}")
+    kb.button(text="⬅️ К управлению", callback_data=f"ctl:{conn_id}:{device_id}")
     await show(cb, "Запись отменена.", kb.as_markup())
     await cb.answer()
 
 
-@router.callback_query(Control.confirm, F.data == "cy")
+_sending: set[tuple[int, int]] = set()  # confirmation messages being processed: a double tap must not write twice
+
+
+@router.callback_query(F.data.startswith("cy:"))
 async def confirm_write(cb: CallbackQuery, state: FSMContext, svc: Services, bot: Bot) -> None:
-    data = await state.get_data()
-    await state.clear()
-    conn, token = await connection_token(svc, cb.message.chat.id, data["conn_id"])
-    if not token:
-        await cb.answer(NO_ACCOUNT, show_alert=True)
+    key = (cb.message.chat.id, cb.message.message_id)
+    if key in _sending:
+        await cb.answer("Команда уже отправляется")
         return
-    title = write_title(data["name"], data["label"])
-    retry = result_keyboard("failed", data["conn_id"], data["device_id"], data["param_id"], data["value"])
+    _sending.add(key)
     try:
-        group_id, write_ids = await svc.owen.write(token, data["param_id"], data["value"])
+        await _confirm_write(cb, state, svc, bot)
+    finally:
+        _sending.discard(key)
+
+
+async def _confirm_write(cb: CallbackQuery, state: FSMContext, svc: Services, bot: Bot) -> None:
+    _, conn_id, device_id, param_id, value = cb.data.split(":", 4)
+    conn_id, device_id, param_id = int(conn_id), int(device_id), int(param_id)
+    loaded = await load_param(cb, svc, conn_id, device_id, param_id)
+    if loaded is None:
+        return
+    _, p = loaded
+    if not value_allowed(p, value):
+        await cb.answer("Недопустимое значение", show_alert=True)
+        return
+    await state.clear()
+    conn, token = await connection_token(svc, cb.message.chat.id, conn_id)
+    label = next((lbl for v, lbl in value_options(p) if v == value), value)
+    title = write_title(p["name"], label)
+    await show(cb, f"⏳ {title}\nОтправляю команду…")
+    retry = result_keyboard("failed", conn_id, device_id, param_id, value)
+    try:
+        group_id, write_ids = await svc.owen.write(token, param_id, value)
     except OwenWriteError as e:
         reason = ("у компании включено SMS-подтверждение команд — запись через бота не поддерживается"
                   if e.code in SMS_CODES else str(e))
@@ -184,13 +219,12 @@ async def confirm_write(cb: CallbackQuery, state: FSMContext, svc: Services, bot
         await show(cb, f"❌ {title}\n{escape(await owen_failure(svc, conn, e))}", retry)
         await cb.answer()
         return
-    log.info("Чат %s: запись параметра %s = %s, группа %s",
-             cb.message.chat.id, data["param_id"], data["value"], group_id)
+    log.info("Чат %s: запись параметра %s = %s, группа %s", cb.message.chat.id, param_id, value, group_id)
     await show(cb, f"⏳ {title}\nКоманда отправлена, ждём выполнения…")
     await cb.answer()
     asyncio.create_task(track_write(
         bot, svc, token, group_id, write_ids, cb.message.chat.id, cb.message.message_id, title,
-        (data["conn_id"], data["device_id"], data["param_id"], data["value"])))
+        (conn_id, device_id, param_id, value)))
 
 
 def write_title(name: str, label: str) -> str:
@@ -261,12 +295,9 @@ async def retry_write(cb: CallbackQuery, state: FSMContext, svc: Services) -> No
     if loaded is None:
         return
     device, p = loaded
-    options = value_options(p)
-    label = next((lbl for v, lbl in options if v == value), value)
-    await state.set_state(Control.value)
-    await state.set_data(dict(conn_id=int(conn_id), device_id=int(device_id), param_id=int(param_id),
-                              name=p["name"], device_name=device.get("name", ""), options=options))
-    await ask_confirm(cb, state, value, label)
+    await state.clear()
+    label = next((lbl for v, lbl in value_options(p) if v == value), value)
+    await ask_confirm(cb, int(conn_id), int(device_id), p, device.get("name", ""), value, label)
     await cb.answer()
 
 

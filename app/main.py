@@ -64,7 +64,9 @@ async def main() -> None:
     bot = Bot(cfg.bot_token, session=create_session(cfg.tg_proxy), default=DefaultBotProperties(parse_mode=ParseMode.HTML))
     dp = Dispatcher(storage=MemoryStorage())
     dp["svc"] = svc
-    updates_log = UpdateLogMiddleware()
+    updates_log = UpdateLogMiddleware(cfg.log_actions_until)
+    if cfg.log_actions_until:
+        logging.info("Журнал действий пользователей: до %s включительно", cfg.log_actions_until)
     dp.message.outer_middleware(updates_log)
     dp.callback_query.outer_middleware(updates_log)
     access = AccessMiddleware(cfg.access_code, cfg.encryption_key)

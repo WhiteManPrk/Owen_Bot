@@ -1,5 +1,6 @@
 import os
 from dataclasses import dataclass
+from datetime import date
 from urllib.parse import quote
 
 
@@ -74,6 +75,14 @@ def db_backend() -> str:
     return backend
 
 
+def parse_date(name: str) -> date | None:
+    value = _env(name)
+    try:
+        return date.fromisoformat(value) if value else None
+    except ValueError:
+        raise SystemExit(f"{name}: «{value}» — нужна дата в формате ГГГГ-ММ-ДД")
+
+
 def is_volume(path: str) -> bool:
     """True if the directory is on a mounted volume rather than in the container layer."""
     directory = os.path.abspath(path)
@@ -102,6 +111,7 @@ class Config:
     access_code: str | None
     log_level: str
     log_dir: str | None
+    log_actions_until: date | None
     outbox_ttl_hours: int
     backup_every_hours: int
     backup_keep: int
@@ -130,6 +140,7 @@ class Config:
             access_code=_env("ACCESS_CODE"),
             log_level=_env("LOG_LEVEL", "INFO").upper(),
             log_dir=_env("LOG_DIR"),
+            log_actions_until=parse_date("LOG_ACTIONS_UNTIL"),
             outbox_ttl_hours=int(_env("OUTBOX_TTL_HOURS", "24")),
             backup_every_hours=int(_env("BACKUP_EVERY_HOURS", "0")),
             backup_keep=int(_env("BACKUP_KEEP", "7")),

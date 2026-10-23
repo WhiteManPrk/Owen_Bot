@@ -24,10 +24,11 @@
 ```
 🔴 Котельная — авария                 ↪ ✅ Котельная — авария завершена
 Не удалось поджечь                       Не удалось поджечь
-🕒 20.02.2026 14:53   [ ✔ Прочитано ]    🕒 14:53 → 15:09 (16 мин)
+🕒 20.02.2026 14:53                       🕒 14:53 → 15:09 (16 мин)
+[ Отметить прочитанным ]
 ```
 
-🔴/✅ — начало/окончание аварии, 🔵/⚪ — информационного события. Кнопка «Прочитано» — только у аварий,
+🔴/✅ — начало/окончание аварии, 🔵/⚪ — информационного события. Кнопка «Отметить прочитанным» — только у аварий,
 одна на событие; окончание приходит ответом на начало.
 
 ## Запуск
@@ -87,6 +88,7 @@ sudo docker compose pull && sudo docker compose up -d   # обновление
 | `OUTBOX_TTL_HOURS` | | `24` | Срок хранения недоставленного уведомления, ч |
 | `BACKUP_EVERY_HOURS` / `BACKUP_KEEP` | | `0` / `7` | Автокопии: период, ч (0 — выкл.); число копий |
 | `LOG_LEVEL` | | `INFO` | `DEBUG`, `INFO`, `WARNING`, `ERROR` |
+| `LOG_ACTIONS_UNTIL` | | | Журнал нажатий и команд пользователей в INFO до даты `ГГГГ-ММ-ДД` включительно |
 
 Логи: `docker compose logs bot` (3 × 10 МБ) и `/logs/owenbot.log` в контейнере (5 × 10 МБ);
 на хост — том `./logs:/logs` в compose-файле.
@@ -160,7 +162,7 @@ tests/           pytest: SQLite и PostgreSQL, заглушки OwenCloud и Tel
 ```bash
 docker compose -f docker-compose.test.yml run --rm --build tests
 
-VERSION=1.3.0
+VERSION=1.3.1
 docker build --platform linux/amd64 --build-arg VERSION=$VERSION \
   -t whitemanprk/owen_bot:$VERSION -t whitemanprk/owen_bot:latest .
 docker push whitemanprk/owen_bot:$VERSION && docker push whitemanprk/owen_bot:latest

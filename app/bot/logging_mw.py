@@ -1,12 +1,14 @@
-"""User action log (DEBUG level).
+"""User action log: INFO until LOG_ACTIONS_UNTIL (inclusive), otherwise DEBUG.
 
 Message text is never logged: it may contain an OwenCloud API key or the access code.
 """
 import logging
 import time
+from datetime import date
 from typing import Any, Awaitable, Callable
 
 from aiogram import BaseMiddleware
+from aiogram.dispatcher.event.bases import UNHANDLED
 from aiogram.types import CallbackQuery, Message, TelegramObject
 
 log = logging.getLogger("app.updates")
@@ -23,12 +25,23 @@ def describe(event: TelegramObject) -> str:
 
 
 class UpdateLogMiddleware(BaseMiddleware):
+    def __init__(self, until: date | None = None):
+        self.until = until
+
+    def level(self) -> int:
+        return logging.INFO if self.until and date.today() <= self.until else logging.DEBUG
+
     async def __call__(self, handler: Callable[[TelegramObject, dict[str, Any]], Awaitable[Any]],
                        event: TelegramObject, data: dict[str, Any]) -> Any:
-        if not log.isEnabledFor(logging.DEBUG):
+        level = self.level()
+        if not log.isEnabledFor(level):
             return await handler(event, data)
         started = time.monotonic()
+        result = None
         try:
-            return await handler(event, data)
+            result = await handler(event, data)
+            return result
         finally:
-            log.debug("%s — %.0f мс", describe(event), (time.monotonic() - started) * 1000)
+            user = getattr(event, "from_user", None)
+            log.log(level, "%s, пользователь %s%s — %.0f мс", describe(event), user.id if user else "?",
+                    ", не обработано" if result is UNHANDLED else "", (time.monotonic() - started) * 1000)

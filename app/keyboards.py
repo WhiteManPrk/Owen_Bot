@@ -7,5 +7,5 @@ NO_KEYBOARD = ReplyKeyboardRemove()
 
 def read_button(conn_id: int, log_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton(text="✔ Прочитано", callback_data=f"rd:{conn_id}:{log_id}")
+        InlineKeyboardButton(text="Отметить прочитанным", callback_data=f"rd:{conn_id}:{log_id}")
     ]])
